@@ -10,28 +10,28 @@ See: .planning/PROJECT.md (updated 2026-02-19)
 ## Current Position
 
 Phase: 1 of 7 (Foundation)
-Plan: 1 of 3 in current phase (01-01 complete)
+Plan: 2 of 3 in current phase (01-02 complete)
 Status: In progress
-Last activity: 2026-02-20 — Completed Plan 01-01: uv project init, FastMCP scaffold, Playwright installed
+Last activity: 2026-02-20 — Completed Plan 01-02: AsyncWebCrawler singleton, lifespan, _format_crawl_error helper
 
-Progress: [█░░░░░░░░░] 5%
+Progress: [██░░░░░░░░] 10%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1
-- Average duration: 3 minutes
-- Total execution time: 0.04 hours
+- Total plans completed: 2
+- Average duration: 2.5 minutes
+- Total execution time: 0.08 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01-foundation | 1/3 | 3 min | 3 min |
+| 01-foundation | 2/3 | 5 min | 2.5 min |
 
 **Recent Trend:**
-- Last 5 plans: 3 min
-- Trend: baseline established
+- Last 5 plans: 3 min, 2 min
+- Trend: fast execution
 
 *Updated after each plan completion*
 
@@ -50,6 +50,9 @@ Recent decisions affecting current work:
 - [01-01]: mcp.run() called bare (no asyncio.run() wrapper) to avoid double event loop error
 - [01-01]: crawl4ai pinned to >=0.8.0,<0.9.0; resolved to 0.8.0
 - [01-01]: mcp[cli] pinned to >=1.26.0; resolved to 1.26.0
+- [Phase 01-foundation]: explicit crawler.start()/close() in try/finally (not async with) — lifespan IS the context manager
+- [Phase 01-foundation]: BrowserConfig(verbose=False) mandatory — verbose=True corrupts MCP stdout transport
+- [Phase 01-foundation]: _format_crawl_error returns structured string (not raises) so Claude can reason about failures
 
 ### Pending Todos
 
@@ -64,5 +67,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed Plan 01-01 — ready for Plan 01-02 (AsyncWebCrawler lifespan singleton)
+Stopped at: Completed Plan 01-02 — AsyncWebCrawler singleton lifespan, ready for Plan 01-03
 Resume file: None

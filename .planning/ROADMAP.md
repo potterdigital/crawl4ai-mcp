@@ -36,7 +36,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 01-01-PLAN.md — uv project setup, FastMCP server scaffold, stderr-only logging, stub ping tool (completed 2026-02-20)
-- [ ] 01-02-PLAN.md — AsyncWebCrawler singleton via FastMCP lifespan, AppContext, graceful error handling
+- [x] 01-02-PLAN.md — AsyncWebCrawler singleton via FastMCP lifespan, AppContext, graceful error handling (completed 2026-02-20)
 - [ ] 01-03-PLAN.md — README with copy-pasteable config snippet, Claude Code registration and verification
 
 ### Phase 2: Core Crawl
