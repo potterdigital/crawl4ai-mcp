@@ -35,7 +35,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 3 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — uv project setup, FastMCP server scaffold, stderr-only logging, stub ping tool
+- [x] 01-01-PLAN.md — uv project setup, FastMCP server scaffold, stderr-only logging, stub ping tool (completed 2026-02-20)
 - [ ] 01-02-PLAN.md — AsyncWebCrawler singleton via FastMCP lifespan, AppContext, graceful error handling
 - [ ] 01-03-PLAN.md — README with copy-pasteable config snippet, Claude Code registration and verification
 
@@ -140,7 +140,7 @@ Note: Phase 6 depends only on Phase 2 and Phase 7 depends only on Phase 1 — th
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/3 | Not started | - |
+| 1. Foundation | 1/3 | In progress | - |
 | 2. Core Crawl | 0/3 | Not started | - |
 | 3. Profile System | 0/3 | Not started | - |
 | 4. Extraction | 0/2 | Not started | - |

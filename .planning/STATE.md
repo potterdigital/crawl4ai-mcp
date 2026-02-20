@@ -10,28 +10,28 @@ See: .planning/PROJECT.md (updated 2026-02-19)
 ## Current Position
 
 Phase: 1 of 7 (Foundation)
-Plan: 0 of 3 in current phase
-Status: Ready to plan
-Last activity: 2026-02-19 — Roadmap created, ready to begin Phase 1 planning
+Plan: 1 of 3 in current phase (01-01 complete)
+Status: In progress
+Last activity: 2026-02-20 — Completed Plan 01-01: uv project init, FastMCP scaffold, Playwright installed
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [█░░░░░░░░░] 5%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0
-- Average duration: -
-- Total execution time: 0 hours
+- Total plans completed: 1
+- Average duration: 3 minutes
+- Total execution time: 0.04 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 01-foundation | 1/3 | 3 min | 3 min |
 
 **Recent Trend:**
-- Last 5 plans: -
-- Trend: -
+- Last 5 plans: 3 min
+- Trend: baseline established
 
 *Updated after each plan completion*
 
@@ -46,10 +46,14 @@ Recent decisions affecting current work:
 - [Init]: AsyncWebCrawler singleton via FastMCP lifespan (prevents browser memory leaks)
 - [Init]: LLM extraction as separate opt-in tool (prevents cost surprises)
 - [Init]: Stderr-only logging enforced from day one (protects MCP transport)
+- [01-01]: logging.basicConfig(stream=sys.stderr) placed before ALL library imports — non-negotiable transport hygiene
+- [01-01]: mcp.run() called bare (no asyncio.run() wrapper) to avoid double event loop error
+- [01-01]: crawl4ai pinned to >=0.8.0,<0.9.0; resolved to 0.8.0
+- [01-01]: mcp[cli] pinned to >=1.26.0; resolved to 1.26.0
 
 ### Pending Todos
 
-None yet.
+None.
 
 ### Blockers/Concerns
 
@@ -59,6 +63,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-19
-Stopped at: Roadmap created — Phase 1 ready to plan
+Last session: 2026-02-20
+Stopped at: Completed Plan 01-01 — ready for Plan 01-02 (AsyncWebCrawler lifespan singleton)
 Resume file: None
