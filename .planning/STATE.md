@@ -10,27 +10,27 @@ See: .planning/PROJECT.md (updated 2026-02-19)
 ## Current Position
 
 Phase: 1 of 7 (Foundation)
-Plan: 2 of 3 in current phase (01-02 complete)
-Status: In progress
-Last activity: 2026-02-20 — Completed Plan 01-02: AsyncWebCrawler singleton, lifespan, _format_crawl_error helper
+Plan: 3 of 3 in current phase (01-03 complete — Phase 1 DONE)
+Status: Phase 1 complete, ready for Phase 2
+Last activity: 2026-02-20 — Completed Plan 01-03: README, server registered in ~/.claude.json, Phase 1 complete
 
-Progress: [██░░░░░░░░] 10%
+Progress: [███░░░░░░░] 14%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 2
-- Average duration: 2.5 minutes
-- Total execution time: 0.08 hours
+- Total plans completed: 3
+- Average duration: 2 minutes
+- Total execution time: 0.10 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01-foundation | 2/3 | 5 min | 2.5 min |
+| 01-foundation | 3/3 | 6 min | 2 min |
 
 **Recent Trend:**
-- Last 5 plans: 3 min, 2 min
+- Last 5 plans: 3 min, 2 min, 1 min
 - Trend: fast execution
 
 *Updated after each plan completion*
@@ -53,6 +53,7 @@ Recent decisions affecting current work:
 - [Phase 01-foundation]: explicit crawler.start()/close() in try/finally (not async with) — lifespan IS the context manager
 - [Phase 01-foundation]: BrowserConfig(verbose=False) mandatory — verbose=True corrupts MCP stdout transport
 - [Phase 01-foundation]: _format_crawl_error returns structured string (not raises) so Claude can reason about failures
+- [Phase 01-foundation]: --scope user confirmed as correct user-scoped registration flag in claude mcp add-json
 
 ### Pending Todos
 
@@ -67,5 +68,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed Plan 01-02 — AsyncWebCrawler singleton lifespan, ready for Plan 01-03
+Stopped at: Completed Plan 01-03 — README and MCP registration complete, Phase 1 Foundation DONE
 Resume file: None

@@ -12,7 +12,7 @@ Seven phases build a local Python MCP server that exposes crawl4ai's full capabi
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation** - Server scaffolding, browser lifecycle, stdio hygiene, and Claude Code registration
+- [x] **Phase 1: Foundation** - Server scaffolding, browser lifecycle, stdio hygiene, and Claude Code registration (completed 2026-02-20)
 - [ ] **Phase 2: Core Crawl** - Single-URL crawl tool with full parameter control and clean markdown output
 - [ ] **Phase 3: Profile System** - Named crawl profiles with per-call override merging
 - [ ] **Phase 4: Extraction** - LLM-powered and CSS-based structured data extraction tools
@@ -37,7 +37,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 Plans:
 - [x] 01-01-PLAN.md — uv project setup, FastMCP server scaffold, stderr-only logging, stub ping tool (completed 2026-02-20)
 - [x] 01-02-PLAN.md — AsyncWebCrawler singleton via FastMCP lifespan, AppContext, graceful error handling (completed 2026-02-20)
-- [ ] 01-03-PLAN.md — README with copy-pasteable config snippet, Claude Code registration and verification
+- [x] 01-03-PLAN.md — README with copy-pasteable config snippet, Claude Code registration and verification (completed 2026-02-20)
 
 ### Phase 2: Core Crawl
 **Goal**: Claude Code can crawl any URL and receive clean, filtered markdown content with full control over JS rendering, request parameters, cache, and content scoping
