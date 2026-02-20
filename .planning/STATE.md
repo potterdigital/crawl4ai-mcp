@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-19)
 
 **Core value:** Claude Code can crawl any page, extract any content (markdown or structured JSON), and orchestrate deep multi-page crawls — all through MCP tool calls, without leaving the coding session.
-**Current focus:** Phase 4 — Extraction (Plan 01 complete, Plan 02 next)
+**Current focus:** Phase 4 — Extraction (Complete — both extract_structured and extract_css tools delivered)
 
 ## Current Position
 
-Phase: 4 of 7 (Extraction)
-Plan: 1 of 2 in phase (04-01 complete — extract_structured tool + _check_api_key + unit tests)
-Status: Plan 04-01 complete; 42 tests pass; EXTR-01, EXTR-03, EXTR-04 satisfied; ready for Plan 04-02
-Last activity: 2026-02-20 — Completed Plan 04-01: extract_structured MCP tool with LLM extraction, env-var key validation
+Phase: 4 of 7 (Extraction) — COMPLETE
+Plan: 2 of 2 in phase (04-02 complete — extract_css tool + unit tests)
+Status: Phase 04 complete; 48 tests pass; EXTR-01, EXTR-02, EXTR-03, EXTR-04 all satisfied; ready for Phase 5
+Last activity: 2026-02-20 — Completed Plan 04-02: extract_css MCP tool with CSS-selector JSON extraction, 6 new tests
 
-Progress: [██████░░░░] 56%
+Progress: [███████░░░] 63%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 9
+- Total plans completed: 10
 - Average duration: 2 minutes
-- Total execution time: 0.37 hours
+- Total execution time: 0.40 hours
 
 **By Phase:**
 
@@ -30,10 +30,10 @@ Progress: [██████░░░░] 56%
 | 01-foundation | 3/3 | 6 min | 2 min |
 | 02-core-crawl | 2/2 | 3 min | 1.5 min |
 | 03-profile-system | 3/3 | 9 min | 3 min |
-| 04-extraction | 1/2 | 3 min | 3 min |
+| 04-extraction | 2/2 | 5 min | 2.5 min |
 
 **Recent Trend:**
-- Last 5 plans: 1 min, 2 min, 2 min, 4 min, 3 min
+- Last 5 plans: 2 min, 2 min, 4 min, 3 min, 2 min
 - Trend: fast execution
 
 *Updated after each plan completion*
@@ -74,6 +74,9 @@ Recent decisions affecting current work:
 - [04-01]: Direct CrawlerRunConfig construction for extraction tools (Option A) — no profile merging or markdown_generator needed
 - [04-01]: Token usage via strategy.total_usage attributes — never strategy.show_usage() which calls print()
 - [04-01]: PROVIDER_ENV_VARS pre-validation catches missing API keys before LLM call attempt
+- [04-02]: Same direct CrawlerRunConfig construction for extract_css — extraction tools bypass profile merging
+- [04-02]: verbose=False on both JsonCssExtractionStrategy and CrawlerRunConfig — non-negotiable MCP transport safety
+- [04-02]: Empty result check includes "[]" string — JsonCssExtractionStrategy returns "[]" when no selectors match
 
 ### Pending Todos
 
@@ -88,5 +91,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed Plan 04-01 — extract_structured tool added with LLM extraction, env-var key validation, 42 tests pass; ready for Plan 04-02 (extract_css)
+Stopped at: Completed Plan 04-02 — Phase 4 (Extraction) complete; extract_css + extract_structured tools; 48 tests pass; ready for Phase 5
 Resume file: None

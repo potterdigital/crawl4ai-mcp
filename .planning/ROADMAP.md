@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Foundation** - Server scaffolding, browser lifecycle, stdio hygiene, and Claude Code registration (completed 2026-02-20)
 - [x] **Phase 2: Core Crawl** - Single-URL crawl tool with full parameter control and clean markdown output (completed 2026-02-20)
 - [x] **Phase 3: Profile System** - Named crawl profiles with per-call override merging (completed 2026-02-20)
-- [ ] **Phase 4: Extraction** - LLM-powered and CSS-based structured data extraction tools
+- [x] **Phase 4: Extraction** - LLM-powered and CSS-based structured data extraction tools (completed 2026-02-20)
 - [ ] **Phase 5: Multi-Page Crawl** - Parallel batch crawling, deep BFS crawl, and sitemap crawl
 - [ ] **Phase 6: Authentication & Sessions** - Cookie injection and named browser session management
 - [ ] **Phase 7: Update Management** - Version checking, startup warnings, and offline update script
@@ -85,7 +85,7 @@ Plans:
 
 Plans:
 - [x] 04-01-PLAN.md — extract_structured tool (LLM-powered, opt-in, cost warning, env-var key sourcing, _check_api_key helper, unit tests) (completed 2026-02-20)
-- [ ] 04-02-PLAN.md — extract_css tool (JsonCssExtractionStrategy, deterministic, no LLM, no cost); EXTR-03 enforcement tests
+- [x] 04-02-PLAN.md — extract_css tool (JsonCssExtractionStrategy, deterministic, no LLM, no cost); EXTR-03 enforcement tests (completed 2026-02-20)
 
 ### Phase 5: Multi-Page Crawl
 **Goal**: Claude can crawl dozens of URLs in parallel, follow links BFS-style to a configurable depth, and harvest all URLs from a sitemap — with hard limits preventing runaway crawls
@@ -142,7 +142,7 @@ Note: Phase 6 depends only on Phase 2 and Phase 7 depends only on Phase 1 — th
 | 1. Foundation | 3/3 | Complete | 2026-02-20 |
 | 2. Core Crawl | 2/2 | Complete | 2026-02-20 |
 | 3. Profile System | 3/3 | Complete | 2026-02-20 |
-| 4. Extraction | 1/2 | In progress | - |
+| 4. Extraction | 2/2 | Complete | 2026-02-20 |
 | 5. Multi-Page Crawl | 0/3 | Not started | - |
 | 6. Authentication & Sessions | 0/2 | Not started | - |
 | 7. Update Management | 0/2 | Not started | - |
