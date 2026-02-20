@@ -1,0 +1,6 @@
+# Default profile: applied as base layer for every crawl.
+# All other profiles are merged on top of these values.
+# page_timeout is in milliseconds (CrawlerRunConfig native unit).
+wait_until: domcontentloaded
+page_timeout: 60000      # 60 seconds
+word_count_threshold: 10 # preserve current server.py behavior (CrawlerRunConfig default is 200)
