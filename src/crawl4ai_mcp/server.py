@@ -21,6 +21,7 @@ from crawl4ai import (
     BrowserConfig,
     CacheMode,
     CrawlerRunConfig,
+    JsonCssExtractionStrategy,
     LLMConfig,
     LLMExtractionStrategy,
 )
@@ -436,6 +437,97 @@ async def extract_structured(
         f"Completion tokens: {usage.completion_tokens}\n"
         f"Total tokens: {usage.total_tokens}"
     )
+
+
+@mcp.tool()
+async def extract_css(
+    url: str,
+    schema: dict,
+    css_selector: str | None = None,
+    wait_for: str | None = None,
+    js_code: str | None = None,
+    page_timeout: int = 60,
+    ctx: Context[ServerSession, AppContext] = None,
+) -> str:
+    """Extract structured JSON from a page using CSS selectors (no LLM, no cost).
+
+    Uses crawl4ai's JsonCssExtractionStrategy for deterministic, repeatable
+    extraction. No LLM API call is made — this tool is completely free to use.
+
+    Args:
+        url: The URL to crawl and extract data from.
+
+        schema: Extraction schema dict defining what to extract. Must contain:
+            - "name": A label for the extraction (e.g. "Products")
+            - "baseSelector": CSS selector matching each repeating item
+              (e.g. "div.product-card")
+            - "fields": List of field definitions, each with:
+              - "name": Field name in output JSON
+              - "selector": CSS selector relative to baseSelector
+              - "type": One of "text", "attribute", "html", "regex",
+                "list", "nested", "nested_list"
+              - "attribute": Required when type is "attribute" (e.g. "href", "src")
+              - "transform": Optional, e.g. "strip", "lowercase"
+              - "default": Optional default value if selector matches nothing
+              - "fields": Required for "nested"/"nested_list"/"list" types
+                (recursive field definitions)
+
+            Example:
+            {
+                "name": "Products",
+                "baseSelector": "div.product",
+                "fields": [
+                    {"name": "title", "selector": "h2", "type": "text"},
+                    {"name": "price", "selector": ".price", "type": "text"},
+                    {"name": "url", "selector": "a", "type": "attribute",
+                     "attribute": "href"}
+                ]
+            }
+
+        css_selector: Restrict extraction scope to elements matching this
+            CSS selector before applying the extraction schema.
+
+        wait_for: Wait condition before extraction (CSS: "css:#el",
+            JS: "js:() => expr"). Useful for dynamically loaded content.
+
+        js_code: JavaScript to execute after page load, before extraction.
+            Use to trigger lazy loading or expand collapsed sections.
+
+        page_timeout: Page load timeout in seconds (default 60).
+    """
+    logger.info("extract_css: %s", url)
+
+    strategy = JsonCssExtractionStrategy(schema, verbose=False)
+
+    # Build CrawlerRunConfig directly (not via build_run_config) —
+    # extraction tools don't need markdown_generator or profile merging.
+    run_cfg = CrawlerRunConfig(
+        extraction_strategy=strategy,
+        page_timeout=page_timeout * 1000,
+        verbose=False,  # CRITICAL: protect MCP transport
+    )
+    if css_selector is not None:
+        run_cfg.css_selector = css_selector
+    if wait_for is not None:
+        run_cfg.wait_for = wait_for
+    if js_code is not None:
+        run_cfg.js_code = js_code
+
+    app: AppContext = ctx.request_context.lifespan_context
+    result = await _crawl_with_overrides(app.crawler, url, run_cfg)
+
+    if not result.success:
+        return _format_crawl_error(url, result)
+
+    if not result.extracted_content or result.extracted_content == "[]":
+        return (
+            "No data extracted\n"
+            f"URL: {url}\n"
+            "The CSS selectors in the schema did not match any elements on the page.\n"
+            "Verify that baseSelector and field selectors are correct for this page's HTML structure."
+        )
+
+    return result.extracted_content
 
 
 def main() -> None:
