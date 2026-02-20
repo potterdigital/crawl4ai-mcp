@@ -65,12 +65,12 @@ Plans:
   3. Any per-call parameter override takes precedence over the selected profile's value (merge order is default -> profile -> per-call)
   4. Claude can call `list_profiles` and see all available profiles with their full configuration
   5. Adding a new YAML file to the `profiles/` directory makes it available as a profile name without any code changes
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 03-01: ProfileManager with YAML loading, ConfigBuilder merge logic (default -> profile -> per-call)
-- [ ] 03-02: Three built-in profiles (fast, js-heavy, stealth) as YAML files; crawl tool gains profile param
-- [ ] 03-03: list_profiles MCP tool; custom profile loading from profiles/ directory
+- [ ] 03-01-PLAN.md — ProfileManager class + build_run_config merge logic (TDD: default → profile → per-call, verbose=False enforcement, unknown-key stripping)
+- [ ] 03-02-PLAN.md — Four built-in YAML profiles (default, fast, js_heavy, stealth) + server.py wiring (AppContext, crawl_url profile param, _build_run_config replaced)
+- [ ] 03-03-PLAN.md — list_profiles MCP tool + human-verified smoke test (PROF-02, PROF-03)
 
 ### Phase 4: Extraction
 **Goal**: Claude can extract structured JSON from any page using either LLM-powered extraction (opt-in, with cost warning) or deterministic CSS/selector extraction (free, no LLM)
