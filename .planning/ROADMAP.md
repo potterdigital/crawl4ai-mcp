@@ -142,7 +142,7 @@ Note: Phase 6 depends only on Phase 2 and Phase 7 depends only on Phase 1 — th
 | 1. Foundation | 3/3 | Complete | 2026-02-20 |
 | 2. Core Crawl | 2/2 | Complete | 2026-02-20 |
 | 3. Profile System | 3/3 | Complete | 2026-02-20 |
-| 4. Extraction | 2/2 | Complete | 2026-02-20 |
+| 4. Extraction | 2/2 | Complete    | 2026-02-20 |
 | 5. Multi-Page Crawl | 0/3 | Not started | - |
 | 6. Authentication & Sessions | 0/2 | Not started | - |
 | 7. Update Management | 0/2 | Not started | - |
