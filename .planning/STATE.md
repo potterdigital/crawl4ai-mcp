@@ -9,12 +9,12 @@ See: .planning/PROJECT.md (updated 2026-02-19)
 
 ## Current Position
 
-Phase: 2 of 7 (Core Crawl) — COMPLETE
-Plan: 2 of 2 in phase (02-02 complete — smoke test verified, README documented)
-Status: Phase 2 fully verified and documented, ready for Phase 3
-Last activity: 2026-02-20 — Completed Plan 02-02: smoke test confirmed end-to-end crawl pipeline; README updated with crawl_url docs
+Phase: 3 of 7 (Profile System) — IN PROGRESS
+Plan: 1 of 3 in phase (03-01 complete — ProfileManager and build_run_config implemented via TDD)
+Status: Plan 03-01 complete; 33 tests pass; ready for Plan 03-02 (YAML profiles + server integration)
+Last activity: 2026-02-20 — Completed Plan 03-01: ProfileManager and build_run_config implemented with full TDD test suite
 
-Progress: [████░░░░░░] 30%
+Progress: [████░░░░░░] 35%
 
 ## Performance Metrics
 
@@ -29,9 +29,10 @@ Progress: [████░░░░░░] 30%
 |-------|-------|-------|----------|
 | 01-foundation | 3/3 | 6 min | 2 min |
 | 02-core-crawl | 2/2 | 3 min | 1.5 min |
+| 03-profile-system | 1/3 | 2 min | 2 min |
 
 **Recent Trend:**
-- Last 5 plans: 3 min, 2 min, 1 min, 1 min, 2 min
+- Last 5 plans: 2 min, 1 min, 1 min, 2 min, 2 min
 - Trend: fast execution
 
 *Updated after each plan completion*
@@ -61,6 +62,9 @@ Recent decisions affecting current work:
 - [02-01]: word_count_threshold exposed as crawl_url param (not hardcoded) for per-call PruningContentFilter tuning
 - [02-01]: CrawlerRunConfig verbose=False CRITICAL — defaults True, writes to stdout via Rich Console, corrupts MCP transport
 - [02-02]: Smoke tests should use CacheMode.BYPASS — ENABLED can return stale cache with hash-only raw_markdown if PruningContentFilter config changed since last cache
+- [03-01]: KNOWN_KEYS excludes verbose — forced False unconditionally after merge (MCP transport safety)
+- [03-01]: word_count_threshold popped from merged dict and routed to PruningContentFilter, not passed directly to CrawlerRunConfig
+- [03-01]: _PER_CALL_KEYS frozenset separates per-call params (css_selector, wait_for, etc.) from YAML-profile KNOWN_KEYS to avoid spurious unknown-key warnings
 
 ### Pending Todos
 
@@ -75,5 +79,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed Plan 02-02 — smoke test verified, README updated with crawl_url docs; Phase 2 fully complete
+Stopped at: Completed Plan 03-01 — ProfileManager and build_run_config implemented via TDD; 33 tests pass; ready for Plan 03-02
 Resume file: None

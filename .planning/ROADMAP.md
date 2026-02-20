@@ -68,7 +68,7 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — ProfileManager class + build_run_config merge logic (TDD: default → profile → per-call, verbose=False enforcement, unknown-key stripping)
+- [x] 03-01-PLAN.md — ProfileManager class + build_run_config merge logic (TDD: default → profile → per-call, verbose=False enforcement, unknown-key stripping) (completed 2026-02-20)
 - [ ] 03-02-PLAN.md — Four built-in YAML profiles (default, fast, js_heavy, stealth) + server.py wiring (AppContext, crawl_url profile param, _build_run_config replaced)
 - [ ] 03-03-PLAN.md — list_profiles MCP tool + human-verified smoke test (PROF-02, PROF-03)
 
@@ -141,7 +141,7 @@ Note: Phase 6 depends only on Phase 2 and Phase 7 depends only on Phase 1 — th
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete | 2026-02-20 |
 | 2. Core Crawl | 2/2 | Complete | 2026-02-20 |
-| 3. Profile System | 0/3 | Not started | - |
+| 3. Profile System | 1/3 | In progress | - |
 | 4. Extraction | 0/2 | Not started | - |
 | 5. Multi-Page Crawl | 0/3 | Not started | - |
 | 6. Authentication & Sessions | 0/2 | Not started | - |
