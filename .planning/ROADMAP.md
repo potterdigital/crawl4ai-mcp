@@ -32,12 +32,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Triggering a deliberate crawler error returns a structured error response to Claude rather than crashing the server
   4. All server output (logs, errors, debug messages) appears in stderr only — stdout contains only valid MCP protocol frames
   5. README contains a copy-pasteable Claude Code MCP config snippet that registers the server correctly
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: uv project setup, FastMCP server scaffolding, stdio transport, stderr-only logging
-- [ ] 01-02: AsyncWebCrawler singleton via FastMCP lifespan, AppContext, graceful error handling
-- [ ] 01-03: Claude Code registration, README with exact config snippet
+- [ ] 01-01-PLAN.md — uv project setup, FastMCP server scaffold, stderr-only logging, stub ping tool
+- [ ] 01-02-PLAN.md — AsyncWebCrawler singleton via FastMCP lifespan, AppContext, graceful error handling
+- [ ] 01-03-PLAN.md — README with copy-pasteable config snippet, Claude Code registration and verification
 
 ### Phase 2: Core Crawl
 **Goal**: Claude Code can crawl any URL and receive clean, filtered markdown content with full control over JS rendering, request parameters, cache, and content scoping
