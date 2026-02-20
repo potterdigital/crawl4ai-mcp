@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Server scaffolding, browser lifecycle, stdio hygiene, and Claude Code registration (completed 2026-02-20)
 - [x] **Phase 2: Core Crawl** - Single-URL crawl tool with full parameter control and clean markdown output (completed 2026-02-20)
-- [ ] **Phase 3: Profile System** - Named crawl profiles with per-call override merging
+- [x] **Phase 3: Profile System** - Named crawl profiles with per-call override merging (completed 2026-02-20)
 - [ ] **Phase 4: Extraction** - LLM-powered and CSS-based structured data extraction tools
 - [ ] **Phase 5: Multi-Page Crawl** - Parallel batch crawling, deep BFS crawl, and sitemap crawl
 - [ ] **Phase 6: Authentication & Sessions** - Cookie injection and named browser session management
@@ -70,7 +70,7 @@ Plans:
 Plans:
 - [x] 03-01-PLAN.md — ProfileManager class + build_run_config merge logic (TDD: default → profile → per-call, verbose=False enforcement, unknown-key stripping) (completed 2026-02-20)
 - [x] 03-02-PLAN.md — Four built-in YAML profiles (default, fast, js_heavy, stealth) + server.py wiring (AppContext, crawl_url profile param, _build_run_config replaced) (completed 2026-02-20)
-- [ ] 03-03-PLAN.md — list_profiles MCP tool + human-verified smoke test (PROF-02, PROF-03)
+- [x] 03-03-PLAN.md — list_profiles MCP tool + human-verified smoke test (PROF-02, PROF-03) (completed 2026-02-20)
 
 ### Phase 4: Extraction
 **Goal**: Claude can extract structured JSON from any page using either LLM-powered extraction (opt-in, with cost warning) or deterministic CSS/selector extraction (free, no LLM)
@@ -141,7 +141,7 @@ Note: Phase 6 depends only on Phase 2 and Phase 7 depends only on Phase 1 — th
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete | 2026-02-20 |
 | 2. Core Crawl | 2/2 | Complete | 2026-02-20 |
-| 3. Profile System | 1/3 | In progress | - |
+| 3. Profile System | 3/3 | Complete | 2026-02-20 |
 | 4. Extraction | 0/2 | Not started | - |
 | 5. Multi-Page Crawl | 0/3 | Not started | - |
 | 6. Authentication & Sessions | 0/2 | Not started | - |
