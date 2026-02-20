@@ -76,9 +76,32 @@ If you prefer to edit `~/.claude.json` directly, add the following under `mcpSer
 
 | Tool | Description |
 |------|-------------|
-| `ping` | Verify the server is running and the browser is ready |
+| `ping` | Health check — confirms server and browser are running |
+| `crawl_url` | Crawl a URL and return clean markdown content. Supports JS rendering, custom headers/cookies, cache control, and CSS content scoping. |
 
-More tools are added in Phase 2 (crawl), Phase 3 (profiles), Phase 4 (extraction), and Phase 5 (multi-page crawl).
+## Usage
+
+Once registered, Claude Code can use `crawl_url` in any conversation:
+
+> "Crawl https://docs.python.org/3/library/asyncio.html and summarize the key concepts"
+> "Fetch https://example.com with a custom Authorization header"
+> "Crawl this JS-heavy page and wait for #content to appear before extracting"
+
+### crawl_url parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `url` | string | required | URL to crawl |
+| `cache_mode` | string | `"enabled"` | Cache behavior: `enabled`, `bypass`, `disabled`, `read_only`, `write_only` |
+| `css_selector` | string | none | Restrict extraction to elements matching this CSS selector |
+| `excluded_selector` | string | none | Exclude elements matching this selector (navbars, footers, etc.) |
+| `wait_for` | string | none | Wait before extracting: `"css:#id"` or `"js:() => condition"` |
+| `js_code` | string | none | JavaScript to run after page load (scroll, click, etc.) |
+| `user_agent` | string | none | Override User-Agent for this request |
+| `headers` | object | none | Custom HTTP headers `{"Authorization": "Bearer token"}` |
+| `cookies` | array | none | Cookies `[{"name": "s", "value": "x", "domain": "example.com"}]` |
+| `page_timeout` | integer | `60` | Page load timeout in seconds |
+| `word_count_threshold` | integer | `10` | Min words for a content block to survive filtering |
 
 ## How It Works
 
