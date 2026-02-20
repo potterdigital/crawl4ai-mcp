@@ -15,10 +15,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig, DefaultMarkdownGenerator
-from crawl4ai.content_filter_strategy import PruningContentFilter
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
+
+from crawl4ai_mcp.profiles import ProfileManager, build_run_config
 
 
 @dataclass
@@ -28,9 +29,13 @@ class AppContext:
     The crawler is a single AsyncWebCrawler instance created at server startup
     and reused for every tool call. This avoids the 2-5 second Chromium startup
     cost on every request and prevents browser process leaks.
+
+    profile_manager holds all loaded YAML profiles and is used by build_run_config
+    to construct CrawlerRunConfig instances with profile + per-call merging.
     """
 
     crawler: AsyncWebCrawler
+    profile_manager: ProfileManager
 
 
 @asynccontextmanager
@@ -56,8 +61,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     await crawler.start()
     logger.info("Browser ready — crawl4ai MCP server is operational")
 
+    profile_manager = ProfileManager()
+    logger.info("Loaded %d profile(s): %s", len(profile_manager.names), profile_manager.names)
+
     try:
-        yield AppContext(crawler=crawler)
+        yield AppContext(crawler=crawler, profile_manager=profile_manager)
     finally:
         logger.info("Shutting down browser")
         await crawler.close()
@@ -81,43 +89,6 @@ def _format_crawl_error(url: str, result) -> str:
         f"Error: {result.error_message}"
     )
 
-
-def _build_run_config(
-    cache_mode: CacheMode = CacheMode.ENABLED,
-    css_selector: str | None = None,
-    excluded_selector: str | None = None,
-    word_count_threshold: int = 10,
-    wait_for: str | None = None,
-    js_code: str | list[str] | None = None,
-    user_agent: str | None = None,
-    page_timeout: int = 60000,
-) -> CrawlerRunConfig:
-    """Build a CrawlerRunConfig with PruningContentFilter applied by default.
-
-    Centralises all run-config construction so that verbose=False and the
-    PruningContentFilter pipeline are consistently applied to every crawl.
-    verbose=False is CRITICAL — the CrawlerRunConfig default is True, which
-    causes crawl4ai's AsyncLogger (backed by Rich Console) to write to stdout,
-    immediately corrupting the MCP stdio JSON-RPC transport.
-    """
-    md_gen = DefaultMarkdownGenerator(
-        content_filter=PruningContentFilter(
-            threshold=0.48,
-            threshold_type="fixed",
-            min_word_threshold=word_count_threshold,
-        )
-    )
-    return CrawlerRunConfig(
-        markdown_generator=md_gen,
-        cache_mode=cache_mode,
-        css_selector=css_selector,
-        excluded_selector=excluded_selector,
-        wait_for=wait_for,
-        js_code=js_code,
-        user_agent=user_agent,
-        page_timeout=page_timeout,
-        verbose=False,  # CRITICAL: verbose=True corrupts MCP stdout transport
-    )
 
 
 async def _crawl_with_overrides(
@@ -176,6 +147,7 @@ async def ping(ctx: Context[ServerSession, AppContext]) -> str:
 @mcp.tool()
 async def crawl_url(
     url: str,
+    profile: str | None = None,
     cache_mode: str = "enabled",
     css_selector: str | None = None,
     excluded_selector: str | None = None,
@@ -197,6 +169,12 @@ async def crawl_url(
 
     Args:
         url: The URL to crawl.
+
+        profile: Name of a built-in or custom crawl profile to use as the base
+            configuration for this request. Per-call parameters take precedence
+            over profile values. Available profiles: "fast", "js_heavy", "stealth".
+            If None (default), only the "default" profile base is applied.
+            Use list_profiles to see all available profiles and their settings.
 
         cache_mode: Controls crawl4ai's cache read/write behaviour.
             - "enabled"    — use cache if available, fetch and store on miss (default)
@@ -255,20 +233,31 @@ async def crawl_url(
     if cache_mode not in _CACHE_MAP:
         logger.warning("Unknown cache_mode %r — defaulting to 'enabled'", cache_mode)
 
-    logger.info("crawl_url: %s (cache=%s)", url, cache_mode)
+    logger.info("crawl_url: %s (cache=%s, profile=%s)", url, cache_mode, profile)
 
-    run_cfg = _build_run_config(
-        cache_mode=resolved_cache,
-        css_selector=css_selector,
-        excluded_selector=excluded_selector,
-        word_count_threshold=word_count_threshold,
-        wait_for=wait_for,
-        js_code=js_code,
-        user_agent=user_agent,
-        page_timeout=page_timeout * 1000,
-    )
+    # Build per-call kwargs — only include optional params when explicitly set
+    # so that profile values are not silently overridden by None/default sentinel values.
+    # Convert page_timeout from seconds (tool interface) to ms (CrawlerRunConfig native unit).
+    per_call_kwargs: dict = {
+        "cache_mode": resolved_cache,
+        "page_timeout": page_timeout * 1000,
+    }
+    if css_selector is not None:
+        per_call_kwargs["css_selector"] = css_selector
+    if excluded_selector is not None:
+        per_call_kwargs["excluded_selector"] = excluded_selector
+    if wait_for is not None:
+        per_call_kwargs["wait_for"] = wait_for
+    if js_code is not None:
+        per_call_kwargs["js_code"] = js_code
+    if user_agent is not None:
+        per_call_kwargs["user_agent"] = user_agent
+    if word_count_threshold != 10:
+        per_call_kwargs["word_count_threshold"] = word_count_threshold
 
     app: AppContext = ctx.request_context.lifespan_context
+    run_cfg = build_run_config(app.profile_manager, profile, **per_call_kwargs)
+
     result = await _crawl_with_overrides(app.crawler, url, run_cfg, headers, cookies)
 
     if not result.success:
