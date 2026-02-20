@@ -81,11 +81,11 @@ Plans:
   2. The `extract_structured` tool description prominently warns about LLM API cost before Claude invokes it
   3. Claude can call `extract_css` with a baseSelector and field definitions and receive structured JSON with no LLM call and no API cost
   4. LLM API keys are sourced from server-side environment variables — no key is ever passed as a tool parameter
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: extract_structured tool (LLM-powered, opt-in, fit_markdown input, cost warning in description, env-var key sourcing)
-- [ ] 04-02: extract_css tool (JsonCssExtractionStrategy, deterministic, no LLM); EXTR-03/04 enforcement
+- [ ] 04-01-PLAN.md — extract_structured tool (LLM-powered, opt-in, cost warning, env-var key sourcing, _check_api_key helper, unit tests)
+- [ ] 04-02-PLAN.md — extract_css tool (JsonCssExtractionStrategy, deterministic, no LLM, no cost); EXTR-03 enforcement tests
 
 ### Phase 5: Multi-Page Crawl
 **Goal**: Claude can crawl dozens of URLs in parallel, follow links BFS-style to a configurable depth, and harvest all URLs from a sitemap — with hard limits preventing runaway crawls
