@@ -5,21 +5,21 @@
 See: .planning/PROJECT.md (updated 2026-02-19)
 
 **Core value:** Claude Code can crawl any page, extract any content (markdown or structured JSON), and orchestrate deep multi-page crawls — all through MCP tool calls, without leaving the coding session.
-**Current focus:** Phase 1 — Foundation
+**Current focus:** Phase 2 — Core Crawl
 
 ## Current Position
 
-Phase: 1 of 7 (Foundation)
-Plan: 3 of 3 in current phase (01-03 complete — Phase 1 DONE)
-Status: Phase 1 complete, ready for Phase 2
-Last activity: 2026-02-20 — Completed Plan 01-03: README, server registered in ~/.claude.json, Phase 1 complete
+Phase: 2 of 7 (Core Crawl)
+Plan: 1 of 1 in current phase (02-01 complete — Phase 2 DONE)
+Status: Phase 2 complete, ready for Phase 3
+Last activity: 2026-02-20 — Completed Plan 02-01: crawl_url tool with helpers, all 5 CORE requirements met
 
-Progress: [███░░░░░░░] 14%
+Progress: [████░░░░░░] 28%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 3
+- Total plans completed: 4
 - Average duration: 2 minutes
 - Total execution time: 0.10 hours
 
@@ -28,9 +28,10 @@ Progress: [███░░░░░░░] 14%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-foundation | 3/3 | 6 min | 2 min |
+| 02-core-crawl | 1/1 | 1 min | 1 min |
 
 **Recent Trend:**
-- Last 5 plans: 3 min, 2 min, 1 min
+- Last 5 plans: 3 min, 2 min, 1 min, 1 min
 - Trend: fast execution
 
 *Updated after each plan completion*
@@ -54,6 +55,11 @@ Recent decisions affecting current work:
 - [Phase 01-foundation]: BrowserConfig(verbose=False) mandatory — verbose=True corrupts MCP stdout transport
 - [Phase 01-foundation]: _format_crawl_error returns structured string (not raises) so Claude can reason about failures
 - [Phase 01-foundation]: --scope user confirmed as correct user-scoped registration flag in claude mcp add-json
+- [02-01]: CacheMode.ENABLED as crawl_url default (not CrawlerRunConfig's BYPASS) — more useful for repeated Claude queries
+- [02-01]: page_timeout exposed as seconds, multiplied by 1000 internally (CrawlerRunConfig expects ms)
+- [02-01]: cookies list[dict] passed raw to Playwright — let Playwright validate shape, not the tool
+- [02-01]: word_count_threshold exposed as crawl_url param (not hardcoded) for per-call PruningContentFilter tuning
+- [02-01]: CrawlerRunConfig verbose=False CRITICAL — defaults True, writes to stdout via Rich Console, corrupts MCP transport
 
 ### Pending Todos
 
@@ -68,5 +74,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed Plan 01-03 — README and MCP registration complete, Phase 1 Foundation DONE
+Stopped at: Completed Plan 02-01 — crawl_url tool with helpers, Phase 2 Core Crawl DONE
 Resume file: None
