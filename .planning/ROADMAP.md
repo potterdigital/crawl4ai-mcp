@@ -69,7 +69,7 @@ Plans:
 
 Plans:
 - [x] 03-01-PLAN.md — ProfileManager class + build_run_config merge logic (TDD: default → profile → per-call, verbose=False enforcement, unknown-key stripping) (completed 2026-02-20)
-- [ ] 03-02-PLAN.md — Four built-in YAML profiles (default, fast, js_heavy, stealth) + server.py wiring (AppContext, crawl_url profile param, _build_run_config replaced)
+- [x] 03-02-PLAN.md — Four built-in YAML profiles (default, fast, js_heavy, stealth) + server.py wiring (AppContext, crawl_url profile param, _build_run_config replaced) (completed 2026-02-20)
 - [ ] 03-03-PLAN.md — list_profiles MCP tool + human-verified smoke test (PROF-02, PROF-03)
 
 ### Phase 4: Extraction

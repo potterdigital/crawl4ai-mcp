@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-02-19)
 ## Current Position
 
 Phase: 3 of 7 (Profile System) — IN PROGRESS
-Plan: 1 of 3 in phase (03-01 complete — ProfileManager and build_run_config implemented via TDD)
-Status: Plan 03-01 complete; 33 tests pass; ready for Plan 03-02 (YAML profiles + server integration)
-Last activity: 2026-02-20 — Completed Plan 03-01: ProfileManager and build_run_config implemented with full TDD test suite
+Plan: 2 of 3 in phase (03-02 complete — YAML profiles + server integration; crawl_url(profile="stealth") works end-to-end)
+Status: Plan 03-02 complete; 33 tests pass; ready for Plan 03-03 (list_profiles tool)
+Last activity: 2026-02-20 — Completed Plan 03-02: Four YAML profile files created and wired into server.py via ProfileManager
 
-Progress: [████░░░░░░] 35%
+Progress: [█████░░░░░] 42%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4
+- Total plans completed: 5
 - Average duration: 2 minutes
-- Total execution time: 0.10 hours
+- Total execution time: 0.15 hours
 
 **By Phase:**
 
@@ -29,7 +29,7 @@ Progress: [████░░░░░░] 35%
 |-------|-------|-------|----------|
 | 01-foundation | 3/3 | 6 min | 2 min |
 | 02-core-crawl | 2/2 | 3 min | 1.5 min |
-| 03-profile-system | 1/3 | 2 min | 2 min |
+| 03-profile-system | 2/3 | 5 min | 2.5 min |
 
 **Recent Trend:**
 - Last 5 plans: 2 min, 1 min, 1 min, 2 min, 2 min
@@ -65,6 +65,9 @@ Recent decisions affecting current work:
 - [03-01]: KNOWN_KEYS excludes verbose — forced False unconditionally after merge (MCP transport safety)
 - [03-01]: word_count_threshold popped from merged dict and routed to PruningContentFilter, not passed directly to CrawlerRunConfig
 - [03-01]: _PER_CALL_KEYS frozenset separates per-call params (css_selector, wait_for, etc.) from YAML-profile KNOWN_KEYS to avoid spurious unknown-key warnings
+- [03-02]: per_call_kwargs built with None-guards so profile defaults are not overridden by unset tool params
+- [03-02]: page_timeout seconds→ms conversion done in crawl_url before merge; profiles and per-call overrides share the ms unit inside build_run_config
+- [03-02]: CrawlerRunConfig still imported in server.py for _crawl_with_overrides type annotation even after config construction moved to profiles.py
 
 ### Pending Todos
 
@@ -79,5 +82,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed Plan 03-01 — ProfileManager and build_run_config implemented via TDD; 33 tests pass; ready for Plan 03-02
+Stopped at: Completed Plan 03-02 — YAML profiles + server integration; crawl_url(profile="stealth") works end-to-end; 33 tests pass; ready for Plan 03-03
 Resume file: None
