@@ -145,6 +145,42 @@ async def ping(ctx: Context[ServerSession, AppContext]) -> str:
 
 
 @mcp.tool()
+async def list_profiles(ctx: Context[ServerSession, AppContext]) -> str:
+    """List all available crawl profiles and their configuration settings.
+
+    Profiles provide named starting-point configurations for crawl_url.
+    Per-call parameters always override profile values (merge order: default -> profile -> per-call).
+
+    The 'default' profile is a special base layer automatically applied to every crawl,
+    even when no profile is specified. All named profiles are merged on top of 'default'.
+
+    To use a custom profile: create a YAML file in the profiles/ directory
+    (e.g. profiles/my_profile.yaml) and pass profile='my_profile' to crawl_url.
+    Custom profiles are picked up on next server restart.
+    """
+    app: AppContext = ctx.request_context.lifespan_context
+    profiles = app.profile_manager.all()
+    if not profiles:
+        return "No profiles loaded. Check that src/crawl4ai_mcp/profiles/ directory exists."
+
+    lines = []
+    for name in sorted(profiles):
+        cfg = profiles[name]
+        if name == "default":
+            lines.append(f"## {name} (base layer — applied to every crawl)")
+        else:
+            lines.append(f"## {name}")
+        if not cfg:
+            lines.append("  (no settings — inherits all defaults)")
+        else:
+            for k, v in sorted(cfg.items()):
+                lines.append(f"  {k}: {v}")
+        lines.append("")  # blank line between profiles
+
+    return "\n".join(lines).rstrip()
+
+
+@mcp.tool()
 async def crawl_url(
     url: str,
     profile: str | None = None,
