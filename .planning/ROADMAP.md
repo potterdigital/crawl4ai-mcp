@@ -13,7 +13,7 @@ Seven phases build a local Python MCP server that exposes crawl4ai's full capabi
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Server scaffolding, browser lifecycle, stdio hygiene, and Claude Code registration (completed 2026-02-20)
-- [ ] **Phase 2: Core Crawl** - Single-URL crawl tool with full parameter control and clean markdown output
+- [x] **Phase 2: Core Crawl** - Single-URL crawl tool with full parameter control and clean markdown output (completed 2026-02-20)
 - [ ] **Phase 3: Profile System** - Named crawl profiles with per-call override merging
 - [ ] **Phase 4: Extraction** - LLM-powered and CSS-based structured data extraction tools
 - [ ] **Phase 5: Multi-Page Crawl** - Parallel batch crawling, deep BFS crawl, and sitemap crawl
@@ -53,7 +53,7 @@ Plans:
 
 Plans:
 - [x] 02-01-PLAN.md — implement crawl_url tool with all params: _build_run_config, _crawl_with_overrides helpers, full CORE-01-05 coverage in server.py (completed 2026-02-20)
-- [ ] 02-02-PLAN.md — smoke test with real crawl + README update documenting crawl_url and its parameters
+- [x] 02-02-PLAN.md — smoke test with real crawl + README update documenting crawl_url and its parameters (completed 2026-02-20)
 
 ### Phase 3: Profile System
 **Goal**: Named crawl profiles (fast, js-heavy, stealth) ship with the server and any crawl tool call can select a profile as a starting point with per-call overrides applied on top
@@ -140,7 +140,7 @@ Note: Phase 6 depends only on Phase 2 and Phase 7 depends only on Phase 1 — th
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete | 2026-02-20 |
-| 2. Core Crawl | 1/2 | In progress | - |
+| 2. Core Crawl | 2/2 | Complete | 2026-02-20 |
 | 3. Profile System | 0/3 | Not started | - |
 | 4. Extraction | 0/2 | Not started | - |
 | 5. Multi-Page Crawl | 0/3 | Not started | - |
