@@ -15,7 +15,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig, DefaultMarkdownGenerator
+from crawl4ai.content_filter_strategy import PruningContentFilter
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
@@ -79,6 +80,80 @@ def _format_crawl_error(url: str, result) -> str:
         f"HTTP status: {result.status_code}\n"
         f"Error: {result.error_message}"
     )
+
+
+def _build_run_config(
+    cache_mode: CacheMode = CacheMode.ENABLED,
+    css_selector: str | None = None,
+    excluded_selector: str | None = None,
+    word_count_threshold: int = 10,
+    wait_for: str | None = None,
+    js_code: str | list[str] | None = None,
+    user_agent: str | None = None,
+    page_timeout: int = 60000,
+) -> CrawlerRunConfig:
+    """Build a CrawlerRunConfig with PruningContentFilter applied by default.
+
+    Centralises all run-config construction so that verbose=False and the
+    PruningContentFilter pipeline are consistently applied to every crawl.
+    verbose=False is CRITICAL — the CrawlerRunConfig default is True, which
+    causes crawl4ai's AsyncLogger (backed by Rich Console) to write to stdout,
+    immediately corrupting the MCP stdio JSON-RPC transport.
+    """
+    md_gen = DefaultMarkdownGenerator(
+        content_filter=PruningContentFilter(
+            threshold=0.48,
+            threshold_type="fixed",
+            min_word_threshold=word_count_threshold,
+        )
+    )
+    return CrawlerRunConfig(
+        markdown_generator=md_gen,
+        cache_mode=cache_mode,
+        css_selector=css_selector,
+        excluded_selector=excluded_selector,
+        wait_for=wait_for,
+        js_code=js_code,
+        user_agent=user_agent,
+        page_timeout=page_timeout,
+        verbose=False,  # CRITICAL: verbose=True corrupts MCP stdout transport
+    )
+
+
+async def _crawl_with_overrides(
+    crawler: AsyncWebCrawler,
+    url: str,
+    config: CrawlerRunConfig,
+    headers: dict | None = None,
+    cookies: list | None = None,
+):
+    """Run arun with per-request header and cookie injection via Playwright hooks.
+
+    CrawlerRunConfig in crawl4ai 0.8.0 has no headers or cookies parameters
+    (those are BrowserConfig-level and thus global). This helper injects them
+    per-request via Playwright strategy hooks immediately before arun(), then
+    clears the hooks in a finally block — even if arun() raises — to prevent
+    hook leakage into subsequent tool calls.
+    """
+    strategy = crawler.crawler_strategy
+
+    if headers:
+        async def before_goto(page, context, url, config, **kwargs):
+            await page.set_extra_http_headers(headers)
+        strategy.set_hook("before_goto", before_goto)
+
+    if cookies:
+        async def on_page_context_created(page, context, **kwargs):
+            await context.add_cookies(cookies)
+        strategy.set_hook("on_page_context_created", on_page_context_created)
+
+    try:
+        return await crawler.arun(url=url, config=config)
+    finally:
+        if headers:
+            strategy.set_hook("before_goto", None)
+        if cookies:
+            strategy.set_hook("on_page_context_created", None)
 
 
 @mcp.tool()
