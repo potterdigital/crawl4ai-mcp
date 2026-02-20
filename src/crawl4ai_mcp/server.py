@@ -1,5 +1,6 @@
 # src/crawl4ai_mcp/server.py
 import logging
+import os
 import sys
 
 # MUST be first: configure all logging to stderr before any library imports emit output.
@@ -15,7 +16,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
+from crawl4ai import (
+    AsyncWebCrawler,
+    BrowserConfig,
+    CacheMode,
+    CrawlerRunConfig,
+    LLMConfig,
+    LLMExtractionStrategy,
+)
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
@@ -75,6 +83,16 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 mcp = FastMCP("crawl4ai", lifespan=app_lifespan)
 
 
+PROVIDER_ENV_VARS: dict[str, str | None] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "ollama": None,  # local, no key needed
+}
+
+
 def _format_crawl_error(url: str, result) -> str:
     """Convert a failed CrawlResult into a structured error string for Claude.
 
@@ -88,6 +106,28 @@ def _format_crawl_error(url: str, result) -> str:
         f"HTTP status: {result.status_code}\n"
         f"Error: {result.error_message}"
     )
+
+
+def _check_api_key(provider: str) -> str | None:
+    """Validate that the expected API key env var is set for the given provider.
+
+    Returns a structured error string if the key is missing, or None if the key
+    is present, the provider is local (e.g. ollama), or the provider is unknown
+    (let litellm handle unknown providers at call time).
+    """
+    prefix = provider.split("/")[0].lower()
+    env_var = PROVIDER_ENV_VARS.get(prefix)
+    if env_var is None:
+        # Provider is local (ollama) or unknown — no env var to check
+        return None
+    if not os.environ.get(env_var):
+        return (
+            f"API key not set\n"
+            f"Provider: {provider}\n"
+            f"Required environment variable: {env_var}\n"
+            f"Set it with: export {env_var}=your-key-here"
+        )
+    return None
 
 
 
@@ -302,6 +342,100 @@ async def crawl_url(
     md = result.markdown
     content = (md.fit_markdown or md.raw_markdown) if md else ""
     return content
+
+
+@mcp.tool()
+async def extract_structured(
+    url: str,
+    schema: dict,
+    instruction: str,
+    provider: str = "openai/gpt-4o-mini",
+    css_selector: str | None = None,
+    wait_for: str | None = None,
+    js_code: str | None = None,
+    page_timeout: int = 60,
+    ctx: Context[ServerSession, AppContext] = None,
+) -> str:
+    """Extract structured JSON from a page using an LLM.
+
+    WARNING: This tool calls an external LLM API and incurs token costs.
+    Each call may cost $0.01-$1+ depending on page size and model.
+    Use extract_css for cost-free deterministic extraction when possible.
+
+    Args:
+        url: The URL to crawl and extract data from.
+        schema: JSON Schema dict describing the desired output structure.
+            Accepts both Pydantic .model_json_schema() output and simple
+            {"type": "object", "properties": {...}} format.
+        instruction: Natural language instruction for the LLM describing
+            what to extract from the page content.
+        provider: LLM provider and model in litellm format (default:
+            "openai/gpt-4o-mini"). Examples: "anthropic/claude-sonnet-4-20250514",
+            "gemini/gemini-2.0-flash". The API key is read from the
+            corresponding environment variable (e.g. OPENAI_API_KEY) —
+            never pass keys as parameters.
+        css_selector: Restrict extraction scope to elements matching this
+            CSS selector before passing content to the LLM.
+        wait_for: Wait condition before extraction (CSS: "css:#el",
+            JS: "js:() => expr").
+        js_code: JavaScript to execute after page load, before extraction.
+        page_timeout: Page load timeout in seconds (default 60).
+    """
+    # Pre-validate API key before attempting LLM call
+    key_error = _check_api_key(provider)
+    if key_error is not None:
+        return key_error
+
+    logger.info("extract_structured: %s (provider=%s)", url, provider)
+
+    llm_config = LLMConfig(provider=provider)
+    strategy = LLMExtractionStrategy(
+        llm_config=llm_config,
+        schema=schema,
+        extraction_type="schema",
+        instruction=instruction,
+        input_format="fit_markdown",
+        verbose=False,  # CRITICAL: protect MCP transport
+    )
+
+    # Build CrawlerRunConfig directly (not via build_run_config) —
+    # extraction tools don't need markdown_generator or profile merging.
+    run_cfg = CrawlerRunConfig(
+        extraction_strategy=strategy,
+        page_timeout=page_timeout * 1000,
+        verbose=False,  # CRITICAL: protect MCP transport
+    )
+    if css_selector is not None:
+        run_cfg.css_selector = css_selector
+    if wait_for is not None:
+        run_cfg.wait_for = wait_for
+    if js_code is not None:
+        run_cfg.js_code = js_code
+
+    app: AppContext = ctx.request_context.lifespan_context
+    result = await _crawl_with_overrides(app.crawler, url, run_cfg)
+
+    if not result.success:
+        return _format_crawl_error(url, result)
+
+    if not result.extracted_content:
+        return (
+            f"Extraction returned no data\n"
+            f"URL: {url}\n"
+            f"The LLM did not produce structured output. "
+            f"Check that the schema matches the page content."
+        )
+
+    # Report token usage — NEVER call strategy.show_usage() (uses print())
+    usage = strategy.total_usage
+    return (
+        f"{result.extracted_content}\n\n"
+        f"--- LLM Usage ---\n"
+        f"Provider: {provider}\n"
+        f"Prompt tokens: {usage.prompt_tokens}\n"
+        f"Completion tokens: {usage.completion_tokens}\n"
+        f"Total tokens: {usage.total_tokens}"
+    )
 
 
 def main() -> None:
