@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-19)
 
 **Core value:** Claude Code can crawl any page, extract any content (markdown or structured JSON), and orchestrate deep multi-page crawls — all through MCP tool calls, without leaving the coding session.
-**Current focus:** Phase 4 — Extraction (Phase 3 complete)
+**Current focus:** Phase 4 — Extraction (Plan 01 complete, Plan 02 next)
 
 ## Current Position
 
-Phase: 3 of 7 (Profile System) — COMPLETE
-Plan: 3 of 3 in phase (03-03 complete — list_profiles tool + human-verified smoke test)
-Status: Phase 3 complete; 33 tests pass; all PROF requirements satisfied; ready for Phase 4
-Last activity: 2026-02-20 — Completed Plan 03-03: list_profiles MCP tool added, end-to-end smoke test approved
+Phase: 4 of 7 (Extraction)
+Plan: 1 of 2 in phase (04-01 complete — extract_structured tool + _check_api_key + unit tests)
+Status: Plan 04-01 complete; 42 tests pass; EXTR-01, EXTR-03, EXTR-04 satisfied; ready for Plan 04-02
+Last activity: 2026-02-20 — Completed Plan 04-01: extract_structured MCP tool with LLM extraction, env-var key validation
 
-Progress: [██████░░░░] 50%
+Progress: [██████░░░░] 56%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 8
+- Total plans completed: 9
 - Average duration: 2 minutes
-- Total execution time: 0.32 hours
+- Total execution time: 0.37 hours
 
 **By Phase:**
 
@@ -30,9 +30,10 @@ Progress: [██████░░░░] 50%
 | 01-foundation | 3/3 | 6 min | 2 min |
 | 02-core-crawl | 2/2 | 3 min | 1.5 min |
 | 03-profile-system | 3/3 | 9 min | 3 min |
+| 04-extraction | 1/2 | 3 min | 3 min |
 
 **Recent Trend:**
-- Last 5 plans: 1 min, 1 min, 2 min, 2 min, 4 min
+- Last 5 plans: 1 min, 2 min, 2 min, 4 min, 3 min
 - Trend: fast execution
 
 *Updated after each plan completion*
@@ -70,6 +71,9 @@ Recent decisions affecting current work:
 - [03-02]: CrawlerRunConfig still imported in server.py for _crawl_with_overrides type annotation even after config construction moved to profiles.py
 - [03-03]: list_profiles output uses markdown headers (##) per profile for Claude-readable formatting
 - [03-03]: Default profile labeled explicitly as "base layer applied to every crawl" to distinguish from named profiles
+- [04-01]: Direct CrawlerRunConfig construction for extraction tools (Option A) — no profile merging or markdown_generator needed
+- [04-01]: Token usage via strategy.total_usage attributes — never strategy.show_usage() which calls print()
+- [04-01]: PROVIDER_ENV_VARS pre-validation catches missing API keys before LLM call attempt
 
 ### Pending Todos
 
@@ -84,5 +88,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed Plan 03-03 — Phase 3 (Profile System) complete; list_profiles tool added, end-to-end smoke test approved; ready for Phase 4
+Stopped at: Completed Plan 04-01 — extract_structured tool added with LLM extraction, env-var key validation, 42 tests pass; ready for Plan 04-02 (extract_css)
 Resume file: None

@@ -84,7 +84,7 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — extract_structured tool (LLM-powered, opt-in, cost warning, env-var key sourcing, _check_api_key helper, unit tests)
+- [x] 04-01-PLAN.md — extract_structured tool (LLM-powered, opt-in, cost warning, env-var key sourcing, _check_api_key helper, unit tests) (completed 2026-02-20)
 - [ ] 04-02-PLAN.md — extract_css tool (JsonCssExtractionStrategy, deterministic, no LLM, no cost); EXTR-03 enforcement tests
 
 ### Phase 5: Multi-Page Crawl
@@ -142,7 +142,7 @@ Note: Phase 6 depends only on Phase 2 and Phase 7 depends only on Phase 1 — th
 | 1. Foundation | 3/3 | Complete | 2026-02-20 |
 | 2. Core Crawl | 2/2 | Complete | 2026-02-20 |
 | 3. Profile System | 3/3 | Complete | 2026-02-20 |
-| 4. Extraction | 0/2 | Not started | - |
+| 4. Extraction | 1/2 | In progress | - |
 | 5. Multi-Page Crawl | 0/3 | Not started | - |
 | 6. Authentication & Sessions | 0/2 | Not started | - |
 | 7. Update Management | 0/2 | Not started | - |
