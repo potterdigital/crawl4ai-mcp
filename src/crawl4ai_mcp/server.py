@@ -173,6 +173,112 @@ async def ping(ctx: Context[ServerSession, AppContext]) -> str:
         return f"error: {e}"
 
 
+@mcp.tool()
+async def crawl_url(
+    url: str,
+    cache_mode: str = "enabled",
+    css_selector: str | None = None,
+    excluded_selector: str | None = None,
+    wait_for: str | None = None,
+    js_code: str | None = None,
+    user_agent: str | None = None,
+    headers: dict | None = None,
+    cookies: list | None = None,
+    page_timeout: int = 60,
+    word_count_threshold: int = 10,
+    ctx: Context[ServerSession, AppContext] = None,
+) -> str:
+    """Crawl a URL and return clean, filtered markdown content.
+
+    By default, applies PruningContentFilter to produce fit_markdown — a
+    noise-reduced version of the page with navigation bars, footers, and
+    low-density blocks removed. Falls back to raw_markdown if fit_markdown
+    is not available.
+
+    Args:
+        url: The URL to crawl.
+
+        cache_mode: Controls crawl4ai's cache read/write behaviour.
+            - "enabled"    — use cache if available, fetch and store on miss (default)
+            - "bypass"     — always fetch fresh; do not read or write cache
+            - "disabled"   — fetch fresh; no cache read or write for this session
+            - "read_only"  — return cached result only; fail if not cached
+            - "write_only" — fetch fresh and overwrite cache; ignore existing cached
+
+        css_selector: Restrict extraction to elements matching this CSS selector
+            (include scope). Example: "article.main-content" extracts only the
+            article element. Without this, the full page body is extracted.
+
+        excluded_selector: Exclude elements matching this CSS selector from
+            extraction (exclude noise). Example: "nav, footer, .sidebar" removes
+            navigation, footer, and sidebar elements before generating markdown.
+
+        wait_for: Wait until a CSS selector or JavaScript condition is met before
+            extracting content. Useful for pages with dynamic content.
+            Format:
+            - CSS: "css:#main-content" — wait until #main-content exists in DOM
+            - JS:  "js:() => window.dataLoaded === true" — wait until JS expression is truthy
+
+        js_code: JavaScript to execute in the page after load and before extraction.
+            Use this to trigger lazy loading, click buttons, or scroll to load more.
+            Examples:
+            - Single string: "window.scrollTo(0, document.body.scrollHeight);"
+            - Note: pass as string; crawl4ai handles execution in the page context.
+
+        user_agent: Override the browser User-Agent string for this request only.
+            Example: "Mozilla/5.0 (compatible; MyBot/1.0)"
+
+        headers: Dict of custom HTTP headers to send with the request. Applied via
+            Playwright page hooks; cleared after the request to avoid leaking into
+            subsequent calls. Example: {"Authorization": "Bearer token", "X-Custom": "val"}
+
+        cookies: List of cookie dicts to send with the request. Each cookie must
+            have at minimum: name, value, domain. Optional fields: path, expires,
+            httpOnly, secure, sameSite.
+            Example: [{"name": "session", "value": "abc123", "domain": "example.com"}]
+
+        page_timeout: Maximum seconds to wait for the page to load before timing
+            out (default 60). Converted to milliseconds internally.
+
+        word_count_threshold: Minimum word count for a content block to survive
+            PruningContentFilter (default 10). Lower values retain more short
+            blocks; higher values prune more aggressively.
+    """
+    _CACHE_MAP = {
+        "enabled": CacheMode.ENABLED,
+        "bypass": CacheMode.BYPASS,
+        "disabled": CacheMode.DISABLED,
+        "read_only": CacheMode.READ_ONLY,
+        "write_only": CacheMode.WRITE_ONLY,
+    }
+    resolved_cache = _CACHE_MAP.get(cache_mode, CacheMode.ENABLED)
+    if cache_mode not in _CACHE_MAP:
+        logger.warning("Unknown cache_mode %r — defaulting to 'enabled'", cache_mode)
+
+    logger.info("crawl_url: %s (cache=%s)", url, cache_mode)
+
+    run_cfg = _build_run_config(
+        cache_mode=resolved_cache,
+        css_selector=css_selector,
+        excluded_selector=excluded_selector,
+        word_count_threshold=word_count_threshold,
+        wait_for=wait_for,
+        js_code=js_code,
+        user_agent=user_agent,
+        page_timeout=page_timeout * 1000,
+    )
+
+    app: AppContext = ctx.request_context.lifespan_context
+    result = await _crawl_with_overrides(app.crawler, url, run_cfg, headers, cookies)
+
+    if not result.success:
+        return _format_crawl_error(url, result)
+
+    md = result.markdown
+    content = (md.fit_markdown or md.raw_markdown) if md else ""
+    return content
+
+
 def main() -> None:
     """Entry point for `uv run python -m crawl4ai_mcp.server` and the crawl4ai-mcp script.
 
