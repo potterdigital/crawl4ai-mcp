@@ -49,12 +49,11 @@ Plans:
   3. Claude can pass custom headers, cookies, user-agent, and timeout values per call and they are applied to that crawl only
   4. Claude can control cache behavior (bypass, force-refresh, use-cached) and the tool respects the instruction
   5. Claude can specify CSS include/exclude selectors and only the matching content is returned
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 02-01: crawl tool implementation with BrowserConfig + CrawlerRunConfig abstraction layer
-- [ ] 02-02: JS rendering params (js_code, wait_for, headless toggle), request params (headers, cookies, user-agent, timeout)
-- [ ] 02-03: Cache control params, CSS selector scoping, fit_markdown filtering, error response shaping
+- [ ] 02-01-PLAN.md — implement crawl_url tool with all params: _build_run_config, _crawl_with_overrides helpers, full CORE-01-05 coverage in server.py
+- [ ] 02-02-PLAN.md — smoke test with real crawl + README update documenting crawl_url and its parameters
 
 ### Phase 3: Profile System
 **Goal**: Named crawl profiles (fast, js-heavy, stealth) ship with the server and any crawl tool call can select a profile as a starting point with per-call overrides applied on top
