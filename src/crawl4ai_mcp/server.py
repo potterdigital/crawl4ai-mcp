@@ -25,6 +25,7 @@ from crawl4ai import (
     LLMConfig,
     LLMExtractionStrategy,
 )
+from crawl4ai.async_dispatcher import SemaphoreDispatcher
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
@@ -130,6 +131,43 @@ def _check_api_key(provider: str) -> str | None:
         )
     return None
 
+
+def _format_multi_results(results: list, include_content: bool = True) -> str:
+    """Format a list of CrawlResult objects into a structured string for Claude.
+
+    Always includes both successes and failures — never discards successful results
+    because of individual URL errors. This helper is shared by crawl_many and will
+    be reused by crawl_sitemap (Plan 03).
+
+    Args:
+        results: List of CrawlResult objects from arun_many or arun (deep crawl).
+        include_content: Whether to include markdown content for successes.
+    """
+    successes = [r for r in results if r.success]
+    failures = [r for r in results if not r.success]
+
+    parts = [f"Crawled {len(successes)} of {len(results)} URLs successfully.\n"]
+
+    for result in successes:
+        depth_info = ""
+        if result.metadata and isinstance(result.metadata, dict) and "depth" in result.metadata:
+            depth_info = f" (depth: {result.metadata['depth']})"
+
+        header = f"## {result.url}{depth_info}"
+
+        if include_content:
+            md = result.markdown
+            content = (md.fit_markdown or md.raw_markdown) if md else ""
+            parts.append(f"{header}\n\n{content}\n")
+        else:
+            parts.append(f"{header}\n")
+
+    if failures:
+        parts.append(f"\n## Failed URLs ({len(failures)})\n")
+        for result in failures:
+            parts.append(f"- {result.url}: {result.error_message}")
+
+    return "\n".join(parts)
 
 
 async def _crawl_with_overrides(
@@ -343,6 +381,120 @@ async def crawl_url(
     md = result.markdown
     content = (md.fit_markdown or md.raw_markdown) if md else ""
     return content
+
+
+@mcp.tool()
+async def crawl_many(
+    urls: list[str],
+    max_concurrent: int = 10,
+    profile: str | None = None,
+    cache_mode: str = "enabled",
+    css_selector: str | None = None,
+    excluded_selector: str | None = None,
+    wait_for: str | None = None,
+    js_code: str | None = None,
+    user_agent: str | None = None,
+    page_timeout: int = 60,
+    word_count_threshold: int = 10,
+    ctx: Context[ServerSession, AppContext] = None,
+) -> str:
+    """Crawl multiple URLs concurrently and return all results.
+
+    URLs are crawled in parallel (not sequentially) using a semaphore-based
+    dispatcher. The `max_concurrent` parameter controls how many URLs are
+    crawled simultaneously (default 10). Per-call parameters apply to ALL
+    URLs in the batch.
+
+    Individual URL failures never fail the entire batch — the result always
+    includes both successes and failures so you can reason about partial results.
+
+    Note: per-call headers and cookies are not supported for batch crawls.
+    Use crawl_url for requests requiring custom headers or cookies.
+
+    Args:
+        urls: List of URLs to crawl concurrently.
+
+        max_concurrent: Maximum number of URLs to crawl simultaneously
+            (default 10). Higher values are faster but use more memory.
+            There is no artificial cap — set as high as needed.
+
+        profile: Name of a crawl profile to use as base configuration.
+            Per-call parameters take precedence over profile values.
+            Use list_profiles to see available profiles.
+
+        cache_mode: Controls crawl4ai's cache read/write behaviour.
+            - "enabled"    — use cache if available, fetch and store on miss (default)
+            - "bypass"     — always fetch fresh; do not read or write cache
+            - "disabled"   — fetch fresh; no cache read or write for this session
+            - "read_only"  — return cached result only; fail if not cached
+            - "write_only" — fetch fresh and overwrite cache; ignore existing cached
+
+        css_selector: Restrict extraction to elements matching this CSS selector
+            (include scope). Applied to ALL URLs in the batch.
+
+        excluded_selector: Exclude elements matching this CSS selector from
+            extraction. Applied to ALL URLs in the batch.
+
+        wait_for: Wait until a CSS selector or JavaScript condition is met before
+            extracting content. Applied to ALL URLs in the batch.
+
+        js_code: JavaScript to execute in each page after load and before
+            extraction. Applied to ALL URLs in the batch.
+
+        user_agent: Override the browser User-Agent string for all requests.
+
+        page_timeout: Maximum seconds to wait for each page to load (default 60).
+
+        word_count_threshold: Minimum word count for a content block to survive
+            PruningContentFilter (default 10).
+    """
+    _CACHE_MAP = {
+        "enabled": CacheMode.ENABLED,
+        "bypass": CacheMode.BYPASS,
+        "disabled": CacheMode.DISABLED,
+        "read_only": CacheMode.READ_ONLY,
+        "write_only": CacheMode.WRITE_ONLY,
+    }
+    resolved_cache = _CACHE_MAP.get(cache_mode, CacheMode.ENABLED)
+    if cache_mode not in _CACHE_MAP:
+        logger.warning("Unknown cache_mode %r — defaulting to 'enabled'", cache_mode)
+
+    logger.info("crawl_many: %d URLs (max_concurrent=%d, profile=%s)", len(urls), max_concurrent, profile)
+
+    # Build per-call kwargs — only include optional params when explicitly set
+    per_call_kwargs: dict = {
+        "cache_mode": resolved_cache,
+        "page_timeout": page_timeout * 1000,
+    }
+    if css_selector is not None:
+        per_call_kwargs["css_selector"] = css_selector
+    if excluded_selector is not None:
+        per_call_kwargs["excluded_selector"] = excluded_selector
+    if wait_for is not None:
+        per_call_kwargs["wait_for"] = wait_for
+    if js_code is not None:
+        per_call_kwargs["js_code"] = js_code
+    if user_agent is not None:
+        per_call_kwargs["user_agent"] = user_agent
+    if word_count_threshold != 10:
+        per_call_kwargs["word_count_threshold"] = word_count_threshold
+
+    app: AppContext = ctx.request_context.lifespan_context
+    run_cfg = build_run_config(app.profile_manager, profile, **per_call_kwargs)
+
+    dispatcher = SemaphoreDispatcher(
+        semaphore_count=max_concurrent,
+        # NO monitor — CrawlerMonitor uses Rich Console -> stdout corruption
+        # NO rate_limiter — fast batch crawl by default
+    )
+
+    results = await app.crawler.arun_many(
+        urls=urls,
+        config=run_cfg,
+        dispatcher=dispatcher,
+    )
+
+    return _format_multi_results(results)
 
 
 @mcp.tool()
