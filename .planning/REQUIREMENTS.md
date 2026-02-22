@@ -41,7 +41,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [x] **AUTH-01**: User can inject cookies into any crawl call (pass cookies dict; applies to the crawl request without persisting to other calls)
 - [x] **AUTH-02**: User can create a named session that maintains browser state across multiple crawl calls (login once, reuse session for subsequent authenticated crawls)
-- [ ] **AUTH-03**: User can list and destroy active sessions via MCP tools
+- [x] **AUTH-03**: User can list and destroy active sessions via MCP tools
 
 ### Profiles
 
@@ -122,7 +122,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | MULTI-04 | Phase 5 | Complete |
 | AUTH-01 | Phase 6 | Complete |
 | AUTH-02 | Phase 6 | Complete |
-| AUTH-03 | Phase 6 | Pending |
+| AUTH-03 | Phase 6 | Complete |
 | UPDT-01 | Phase 7 | Pending |
 | UPDT-02 | Phase 7 | Pending |
 | UPDT-03 | Phase 7 | Pending |
