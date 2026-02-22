@@ -536,6 +536,57 @@ async def create_session(
 
 
 @mcp.tool()
+async def list_sessions(
+    ctx: Context[ServerSession, AppContext] = None,
+) -> str:
+    """List all active named browser sessions.
+
+    Shows each session's name and how long ago it was created.
+    Sessions have a 30-minute inactivity TTL managed by crawl4ai —
+    a session may have been auto-expired by crawl4ai even if it
+    still appears here. The next crawl_url call with an expired
+    session_id will transparently create a fresh session.
+    """
+    app: AppContext = ctx.request_context.lifespan_context
+    if not app.sessions:
+        return "No active sessions."
+
+    lines = ["Active sessions:"]
+    now = time.time()
+    for sid, created in sorted(app.sessions.items()):
+        age_mins = (now - created) / 60
+        lines.append(f"  - {sid} (created {age_mins:.0f} min ago)")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def destroy_session(
+    session_id: str,
+    ctx: Context[ServerSession, AppContext] = None,
+) -> str:
+    """Destroy a named browser session and free its resources.
+
+    Closes the session's browser page and context. The session_id
+    can no longer be used with crawl_url after destruction.
+
+    Args:
+        session_id: The session name to destroy. Use list_sessions
+            to see available sessions.
+    """
+    app: AppContext = ctx.request_context.lifespan_context
+    if session_id not in app.sessions:
+        return f"Session not found: {session_id}"
+
+    logger.info("destroy_session: %s", session_id)
+    try:
+        await app.crawler.crawler_strategy.kill_session(session_id)
+    except Exception as exc:
+        logger.warning("Error killing session %s: %s", session_id, exc)
+    del app.sessions[session_id]
+    return f"Session destroyed: {session_id}"
+
+
+@mcp.tool()
 async def crawl_many(
     urls: list[str],
     max_concurrent: int = 10,
