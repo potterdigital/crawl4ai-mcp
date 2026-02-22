@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-19)
 
 **Core value:** Claude Code can crawl any page, extract any content (markdown or structured JSON), and orchestrate deep multi-page crawls — all through MCP tool calls, without leaving the coding session.
-**Current focus:** Phase 5 complete — Multi-Page Crawl (crawl_many + deep_crawl + crawl_sitemap delivered)
+**Current focus:** Phase 6 in progress — Authentication & Sessions (session infrastructure + create_session delivered)
 
 ## Current Position
 
-Phase: 5 of 7 (Multi-Page Crawl) — COMPLETE
-Plan: 3 of 3 in phase (05-01 + 05-02 + 05-03 complete — all multi-page tools)
-Status: Phase 5 complete; MULTI-01, MULTI-02, MULTI-03, MULTI-04 satisfied; ready for Phase 6 or 7
-Last activity: 2026-02-22 — Completed Plan 05-03: crawl_sitemap tool
+Phase: 6 of 7 (Authentication & Sessions) — IN PROGRESS
+Plan: 1 of 2 in phase (06-01 complete — session infrastructure + create_session tool)
+Status: Plan 06-01 complete; AUTH-01, AUTH-02 satisfied; ready for Plan 06-02
+Last activity: 2026-02-22 — Completed Plan 06-01: session infrastructure
 
-Progress: [████████░░] 80%
+Progress: [████████░░] 85%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 12
+- Total plans completed: 13
 - Average duration: 2 minutes
-- Total execution time: 0.48 hours
+- Total execution time: 0.51 hours
 
 **By Phase:**
 
@@ -32,9 +32,10 @@ Progress: [████████░░] 80%
 | 03-profile-system | 3/3 | 9 min | 3 min |
 | 04-extraction | 2/2 | 5 min | 2.5 min |
 | 05-multi-page-crawl | 3/3 | 7 min | 2.3 min |
+| 06-authentication-sessions | 1/2 | 2 min | 2 min |
 
 **Recent Trend:**
-- Last 5 plans: 3 min, 2 min, 2 min, 3 min, 2 min
+- Last 5 plans: 2 min, 2 min, 3 min, 2 min, 2 min
 - Trend: fast execution
 
 *Updated after each plan completion*
@@ -88,6 +89,9 @@ Recent decisions affecting current work:
 - [05-03]: httpx for sitemap fetching (not browser) — sitemaps are plain XML, no JS rendering needed
 - [05-03]: Recursive resolution for sitemap index files — transparent to the caller
 - [05-03]: max_urls default 500 — prevents runaway crawls on large sitemaps (50K+ URLs common)
+- [06-01]: Sessions tracked as dict[str, float] mapping session_id to creation timestamp for future TTL enforcement
+- [06-01]: create_session uses about:blank for cookie-only sessions (no URL) to avoid unnecessary page loads
+- [06-01]: Session cleanup uses kill_session in finally block — exceptions caught and ignored to ensure all sessions are attempted
 
 ### Pending Todos
 
@@ -102,5 +106,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-22
-Stopped at: Completed 05-03-PLAN.md — Phase 5 (Multi-Page Crawl) complete; ready for Phase 6 or 7
+Stopped at: Completed 06-01-PLAN.md — Plan 06-01 (session infrastructure) complete; ready for Plan 06-02
 Resume file: None
