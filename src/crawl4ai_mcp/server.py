@@ -327,6 +327,7 @@ async def list_profiles(ctx: Context[ServerSession, AppContext]) -> str:
 async def crawl_url(
     url: str,
     profile: str | None = None,
+    session_id: str | None = None,
     cache_mode: str = "enabled",
     css_selector: str | None = None,
     excluded_selector: str | None = None,
@@ -354,6 +355,13 @@ async def crawl_url(
             over profile values. Available profiles: "fast", "js_heavy", "stealth".
             If None (default), only the "default" profile base is applied.
             Use list_profiles to see all available profiles and their settings.
+
+        session_id: Optional session name for persistent browser state. When
+            provided, the crawl reuses the same browser page across calls —
+            cookies, localStorage, and DOM state persist. First call with a new
+            session_id creates the session automatically. Use create_session to
+            set up a session with initial cookies before crawling. Sessions have
+            a 30-minute inactivity TTL.
 
         cache_mode: Controls crawl4ai's cache read/write behaviour.
             - "enabled"    — use cache if available, fetch and store on miss (default)
@@ -431,6 +439,8 @@ async def crawl_url(
         per_call_kwargs["js_code"] = js_code
     if user_agent is not None:
         per_call_kwargs["user_agent"] = user_agent
+    if session_id is not None:
+        per_call_kwargs["session_id"] = session_id
     if word_count_threshold != 10:
         per_call_kwargs["word_count_threshold"] = word_count_threshold
 
@@ -442,9 +452,87 @@ async def crawl_url(
     if not result.success:
         return _format_crawl_error(url, result)
 
+    # Track session if session_id was provided and crawl succeeded
+    if session_id and session_id not in app.sessions:
+        app.sessions[session_id] = time.time()
+
     md = result.markdown
     content = (md.fit_markdown or md.raw_markdown) if md else ""
     return content
+
+
+@mcp.tool()
+async def create_session(
+    session_id: str | None = None,
+    url: str | None = None,
+    cookies: list | None = None,
+    headers: dict | None = None,
+    ctx: Context[ServerSession, AppContext] = None,
+) -> str:
+    """Create a named browser session for multi-step authenticated workflows.
+
+    The session maintains cookies, localStorage, and browser state across
+    multiple crawl_url calls that reference the same session_id.
+
+    Sessions have a 30-minute inactivity TTL — each crawl_url call with the
+    session_id resets the timer.
+
+    Args:
+        session_id: Name for the session. If not provided, a UUID is generated.
+            Use a descriptive name like "github-auth" or "dashboard-session".
+
+        url: Optional URL to navigate to during session creation. Useful for
+            login pages where you want to combine session creation with an
+            initial crawl. If omitted, the session page is created without
+            navigating anywhere.
+
+        cookies: Optional list of cookie dicts to inject into the session.
+            Each cookie must have at minimum: name, value, domain.
+            These cookies persist in the session for subsequent crawl_url calls.
+
+        headers: Optional dict of HTTP headers to send with the initial request.
+            Only applied if url is also provided.
+    """
+    app: AppContext = ctx.request_context.lifespan_context
+    sid = session_id or str(uuid.uuid4())
+
+    if sid in app.sessions:
+        return f"Session already exists: {sid}"
+
+    logger.info("create_session: %s (url=%s)", sid, url)
+
+    if url:
+        # Create session by crawling a URL (e.g., a login page)
+        config = build_run_config(
+            app.profile_manager,
+            None,
+            session_id=sid,
+            cache_mode=CacheMode.BYPASS,
+        )
+        result = await _crawl_with_overrides(app.crawler, url, config, headers, cookies)
+
+        app.sessions[sid] = time.time()
+
+        if not result.success:
+            return f"Session created: {sid}\n\nWarning: initial crawl failed:\n{_format_crawl_error(url, result)}"
+
+        md = result.markdown
+        content = (md.fit_markdown or md.raw_markdown) if md else ""
+        return f"Session created: {sid}\n\nInitial page content:\n{content}"
+    else:
+        # Create session page without navigating
+        if cookies:
+            # Need to do a minimal crawl to inject cookies via hooks
+            config = build_run_config(
+                app.profile_manager,
+                None,
+                session_id=sid,
+                cache_mode=CacheMode.BYPASS,
+            )
+            # Use about:blank as a no-op navigation target for cookie injection
+            await _crawl_with_overrides(app.crawler, "about:blank", config, None, cookies)
+        app.sessions[sid] = time.time()
+        return f"Session created: {sid}"
 
 
 @mcp.tool()
