@@ -25,6 +25,11 @@ from crawl4ai import (
     LLMConfig,
     LLMExtractionStrategy,
 )
+from crawl4ai.deep_crawling import (
+    BFSDeepCrawlStrategy,
+    FilterChain,
+    URLPatternFilter,
+)
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
@@ -528,6 +533,175 @@ async def extract_css(
         )
 
     return result.extracted_content
+
+
+def _format_multi_results(results: list) -> str:
+    """Format multiple CrawlResults into a structured string for Claude.
+
+    Separates successes and failures, includes depth/parent_url metadata
+    when available (from deep_crawl). Always returns both — never discards
+    successful results because of individual URL errors.
+    """
+    parts = []
+    successes = [r for r in results if r.success]
+    failures = [r for r in results if not r.success]
+
+    parts.append(f"Crawled {len(successes)} of {len(results)} URLs successfully.\n")
+
+    for result in successes:
+        md = result.markdown
+        content = (md.fit_markdown or md.raw_markdown) if md else ""
+        depth_info = ""
+        if result.metadata and "depth" in result.metadata:
+            depth_info = f" (depth: {result.metadata['depth']})"
+        parent_info = ""
+        if result.metadata and result.metadata.get("parent_url"):
+            parent_info = f"\nParent: {result.metadata['parent_url']}"
+        parts.append(f"## {result.url}{depth_info}{parent_info}\n\n{content}\n")
+
+    if failures:
+        parts.append(f"\n## Failed URLs ({len(failures)})\n")
+        for result in failures:
+            parts.append(f"- {result.url}: {result.error_message}\n")
+
+    return "\n".join(parts)
+
+
+@mcp.tool()
+async def deep_crawl(
+    url: str,
+    max_depth: int = 3,
+    max_pages: int = 100,
+    scope: str = "same-domain",
+    include_pattern: str | None = None,
+    exclude_pattern: str | None = None,
+    profile: str | None = None,
+    cache_mode: str = "enabled",
+    css_selector: str | None = None,
+    excluded_selector: str | None = None,
+    wait_for: str | None = None,
+    js_code: str | None = None,
+    user_agent: str | None = None,
+    page_timeout: int = 60,
+    word_count_threshold: int = 10,
+    ctx: Context[ServerSession, AppContext] = None,
+) -> str:
+    """Crawl a site by following links from a start URL using BFS (breadth-first search).
+
+    Starting from the given URL, discovers all links on the page, crawls them,
+    discovers their links, and repeats up to max_depth levels deep. Stops when
+    max_pages total pages have been crawled or no more links are found.
+
+    Each URL is crawled at most once (automatic deduplication). Results include
+    depth (how many links away from the start URL) and parent_url metadata.
+
+    Args:
+        url: The starting URL to begin the crawl from.
+
+        max_depth: Maximum number of link levels to follow from the start URL
+            (default 3). Depth 0 is the start page, depth 1 is pages linked
+            from the start page, etc.
+
+        max_pages: Hard cap on total pages crawled (default 100). The crawl
+            stops when this many pages have been successfully crawled, even if
+            more links exist. Large values take proportionally longer — the
+            agent controls this.
+
+        scope: Domain scope for link following.
+            - "same-domain" (default): Only follow links within the start URL's
+              domain (includes subdomains).
+            - "same-origin": Same behavior as same-domain.
+            - "any": Follow all links including external domains.
+
+        include_pattern: Glob pattern to filter which URLs to follow (e.g.,
+            "/docs/*" to only follow documentation links). Only URLs matching
+            this pattern will be crawled.
+
+        exclude_pattern: Glob pattern to exclude URLs from following (e.g.,
+            "/internal/*" to skip internal links). URLs matching this pattern
+            will not be crawled.
+
+        profile: Named crawl profile for per-page configuration.
+        cache_mode: Cache behavior (same as crawl_url).
+        css_selector: Restrict extraction to matching elements on each page.
+        excluded_selector: Exclude matching elements from extraction.
+        wait_for: Wait condition before extracting each page.
+        js_code: JavaScript to execute on each page before extraction.
+        user_agent: Override User-Agent string.
+        page_timeout: Page load timeout in seconds (default 60).
+        word_count_threshold: Minimum word count for content blocks (default 10).
+
+    Note:
+        Per-request headers and cookies are not supported for deep_crawl in v1.
+        Use crawl_url for single pages that need custom headers or cookies.
+    """
+    _CACHE_MAP = {
+        "enabled": CacheMode.ENABLED,
+        "bypass": CacheMode.BYPASS,
+        "disabled": CacheMode.DISABLED,
+        "read_only": CacheMode.READ_ONLY,
+        "write_only": CacheMode.WRITE_ONLY,
+    }
+    resolved_cache = _CACHE_MAP.get(cache_mode, CacheMode.ENABLED)
+    if cache_mode not in _CACHE_MAP:
+        logger.warning("Unknown cache_mode %r — defaulting to 'enabled'", cache_mode)
+
+    logger.info(
+        "deep_crawl: %s (depth=%d, max_pages=%d, scope=%s)",
+        url, max_depth, max_pages, scope,
+    )
+
+    # Build filter chain from agent params
+    filters = []
+    if include_pattern is not None:
+        filters.append(URLPatternFilter(patterns=[include_pattern]))
+    if exclude_pattern is not None:
+        filters.append(URLPatternFilter(patterns=[exclude_pattern], reverse=True))
+    filter_chain = FilterChain(filters=filters) if filters else FilterChain()
+
+    # Map scope to include_external
+    if scope in ("same-domain", "same-origin"):
+        include_external = False
+    elif scope == "any":
+        include_external = True
+    else:
+        logger.warning("Unknown scope %r — defaulting to 'same-domain'", scope)
+        include_external = False
+
+    # MUST be fresh per call — BFSDeepCrawlStrategy has mutable state
+    strategy = BFSDeepCrawlStrategy(
+        max_depth=max_depth,
+        max_pages=max_pages,
+        include_external=include_external,
+        filter_chain=filter_chain,
+    )
+
+    # Build per-call kwargs — only include optional params when explicitly set
+    per_call_kwargs: dict = {
+        "cache_mode": resolved_cache,
+        "page_timeout": page_timeout * 1000,
+        "deep_crawl_strategy": strategy,
+    }
+    if css_selector is not None:
+        per_call_kwargs["css_selector"] = css_selector
+    if excluded_selector is not None:
+        per_call_kwargs["excluded_selector"] = excluded_selector
+    if wait_for is not None:
+        per_call_kwargs["wait_for"] = wait_for
+    if js_code is not None:
+        per_call_kwargs["js_code"] = js_code
+    if user_agent is not None:
+        per_call_kwargs["user_agent"] = user_agent
+    if word_count_threshold != 10:
+        per_call_kwargs["word_count_threshold"] = word_count_threshold
+
+    app: AppContext = ctx.request_context.lifespan_context
+    run_cfg = build_run_config(app.profile_manager, profile, **per_call_kwargs)
+
+    # When deep_crawl_strategy is set, arun() returns List[CrawlResult]
+    results = await app.crawler.arun(url=url, config=run_cfg)
+
+    return _format_multi_results(results)
 
 
 def main() -> None:

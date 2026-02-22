@@ -57,6 +57,7 @@ _PER_CALL_KEYS: frozenset[str] = frozenset(
         "wait_for",
         "js_code",
         "user_agent",
+        "deep_crawl_strategy",
     }
 )
 
