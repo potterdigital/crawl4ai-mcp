@@ -41,7 +41,7 @@ None active. Previous research concerns resolved during v1.0 execution.
 
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
-| 1 | Run full test on MCP server with real URLs | 2026-02-22 | pending | [1-run-full-test-on-mcp-server-with-real-ur](./quick/1-run-full-test-on-mcp-server-with-real-ur/) |
+| 1 | Run full test on MCP server with real URLs | 2026-02-22 | 16fb94a | [1-run-full-test-on-mcp-server-with-real-ur](./quick/1-run-full-test-on-mcp-server-with-real-ur/) |
 
 ## Session Continuity
 
