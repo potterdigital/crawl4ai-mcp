@@ -1,7 +1,10 @@
 # src/crawl4ai_mcp/server.py
+import asyncio
 import gzip
+import importlib.metadata
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -37,6 +40,7 @@ from crawl4ai.deep_crawling import (
 )
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
+from packaging.version import Version
 from mcp.server.session import ServerSession
 
 from crawl4ai_mcp.profiles import ProfileManager, build_run_config
@@ -88,6 +92,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
     profile_manager = ProfileManager()
     logger.info("Loaded %d profile(s): %s", len(profile_manager.names), profile_manager.names)
+
+    # Fire-and-forget version check — never blocks server readiness
+    asyncio.create_task(_startup_version_check())
 
     app_ctx = AppContext(crawler=crawler, profile_manager=profile_manager, sessions={})
     try:
@@ -234,6 +241,89 @@ async def _fetch_sitemap_urls(sitemap_url: str) -> list[str]:
     return [loc.text.strip() for loc in locs if loc.text]
 
 
+async def _get_latest_pypi_version() -> tuple[str, dict]:
+    """Query PyPI for the latest crawl4ai release version.
+
+    Returns a tuple of (version_string, full_json_data) from PyPI's JSON API.
+    Raises httpx.HTTPError or httpx.TimeoutException on failure (caller handles).
+    """
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get("https://pypi.org/pypi/crawl4ai/json")
+        resp.raise_for_status()
+        data = resp.json()
+        return data["info"]["version"], data
+
+
+async def _fetch_changelog_summary(version: str) -> str:
+    """Fetch and extract changelog highlights for a specific crawl4ai version.
+
+    Fetches CHANGELOG.md from the crawl4ai GitHub repo and extracts the section
+    for the given version. Returns category headers and first-level bullets,
+    truncated to 20 lines.
+
+    On any failure, returns a fallback URL string pointing to the changelog.
+    """
+    fallback = "Changelog: https://github.com/unclecode/crawl4ai/blob/main/CHANGELOG.md"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://raw.githubusercontent.com/unclecode/crawl4ai/main/CHANGELOG.md"
+            )
+            resp.raise_for_status()
+
+        text = resp.text
+        # Extract the section for this version
+        pattern = rf"## \[{re.escape(version)}\].*?\n(.*?)(?=\n## \[|$)"
+        match = re.search(pattern, text, re.DOTALL)
+        if not match:
+            return fallback
+
+        section = match.group(1)
+        # Keep category headers (### ) and first-level bullets (- **)
+        lines = []
+        for line in section.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("### ") or stripped.startswith("- **"):
+                lines.append(stripped)
+        if not lines:
+            return fallback
+
+        # Truncate to 20 lines
+        if len(lines) > 20:
+            lines = lines[:20]
+            lines.append("... (truncated)")
+
+        return "\n".join(lines)
+    except Exception:
+        return fallback
+
+
+async def _startup_version_check() -> None:
+    """Fire-and-forget check for crawl4ai updates at server startup.
+
+    Logs a warning to stderr if a newer version is available on PyPI.
+    Uses a tighter 5-second timeout. This function MUST NEVER raise —
+    version checking should never disrupt server startup.
+    """
+    try:
+        installed = importlib.metadata.version("crawl4ai")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get("https://pypi.org/pypi/crawl4ai/json")
+            resp.raise_for_status()
+            data = resp.json()
+            latest = data["info"]["version"]
+
+        if Version(latest) > Version(installed):
+            logger.warning(
+                "A newer crawl4ai version is available: %s (installed: %s). "
+                "Run scripts/update.sh to upgrade.",
+                latest,
+                installed,
+            )
+    except Exception:
+        pass  # Never disrupt server startup
+
+
 async def _crawl_with_overrides(
     crawler: AsyncWebCrawler,
     url: str,
@@ -321,6 +411,52 @@ async def list_profiles(ctx: Context[ServerSession, AppContext]) -> str:
         lines.append("")  # blank line between profiles
 
     return "\n".join(lines).rstrip()
+
+
+@mcp.tool()
+async def check_update(ctx: Context[ServerSession, AppContext]) -> str:
+    """Check if a newer version of crawl4ai is available on PyPI.
+
+    Compares the installed version against the latest release. Reports version
+    info and changelog highlights. Never performs the upgrade itself -- use
+    scripts/update.sh for that.
+    """
+    installed = importlib.metadata.version("crawl4ai")
+
+    try:
+        latest, _data = await _get_latest_pypi_version()
+    except (httpx.HTTPError, httpx.TimeoutException) as exc:
+        return (
+            f"Version check failed\n"
+            f"Installed: {installed}\n"
+            f"Error: Could not reach PyPI ({exc})"
+        )
+    except Exception as exc:
+        return (
+            f"Version check failed\n"
+            f"Installed: {installed}\n"
+            f"Error: {exc}"
+        )
+
+    if Version(latest) <= Version(installed):
+        return (
+            f"crawl4ai is up to date\n"
+            f"Installed: {installed}\n"
+            f"Latest: {latest}"
+        )
+
+    # Update available — fetch changelog summary
+    changelog = await _fetch_changelog_summary(latest)
+
+    return (
+        f"Update available\n"
+        f"Installed: {installed}\n"
+        f"Latest: {latest}\n"
+        f"Release: https://github.com/unclecode/crawl4ai/releases/tag/v{latest}\n"
+        f"To upgrade: stop the server and run: scripts/update.sh\n"
+        f"\n"
+        f"Changelog highlights:\n{changelog}"
+    )
 
 
 @mcp.tool()
