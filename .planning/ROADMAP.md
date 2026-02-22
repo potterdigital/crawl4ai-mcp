@@ -125,11 +125,11 @@ Plans:
   1. Claude can call `check_update` and see the installed version, the latest PyPI version, and a changelog summary — the tool never performs the upgrade itself
   2. Starting the server when a newer crawl4ai version exists logs a visible warning to stderr before the server becomes ready
   3. Running `scripts/update.sh` upgrades crawl4ai, re-installs Playwright if needed, and prints confirmation that the server still starts correctly
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 07-01: check_update tool (PyPI JSON API, importlib.metadata version compare, changelog summary)
-- [ ] 07-02: Startup version check with stderr warning; scripts/update.sh (uv/pip upgrade + playwright install + smoke test)
+- [ ] 07-01-PLAN.md — check_update MCP tool + helpers + non-blocking startup version check + unit tests (UPDT-01, UPDT-02)
+- [ ] 07-02-PLAN.md — scripts/update.sh: offline upgrade with Playwright reinstall and smoke test (UPDT-03)
 
 ## Progress
 
