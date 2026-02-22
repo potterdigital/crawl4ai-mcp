@@ -17,8 +17,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: Profile System** - Named crawl profiles with per-call override merging (completed 2026-02-20)
 - [x] **Phase 4: Extraction** - LLM-powered and CSS-based structured data extraction tools (completed 2026-02-20)
 - [x] **Phase 5: Multi-Page Crawl** - Parallel batch crawling, deep BFS crawl, and sitemap crawl (completed 2026-02-22)
-- [ ] **Phase 6: Authentication & Sessions** - Cookie injection and named browser session management
-- [ ] **Phase 7: Update Management** - Version checking, startup warnings, and offline update script
+- [x] **Phase 6: Authentication & Sessions** - Cookie injection and named browser session management (completed 2026-02-22)
+- [x] **Phase 7: Update Management** - Version checking, startup warnings, and offline update script (completed 2026-02-22)
+- [ ] **Phase 8: Verify Profile System & Close Traceability** - Formal verification of Phase 3, traceability cleanup
 
 ## Phase Details
 
@@ -114,8 +115,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 06-01-PLAN.md — Session infrastructure: AppContext.sessions, session_id on crawl_url, create_session tool, cleanup on shutdown (AUTH-01, AUTH-02)
-- [ ] 06-02-PLAN.md — list_sessions and destroy_session tools + session tracking unit tests (AUTH-03)
+- [x] 06-01-PLAN.md — Session infrastructure: AppContext.sessions, session_id on crawl_url, create_session tool, cleanup on shutdown (AUTH-01, AUTH-02) (completed 2026-02-22)
+- [x] 06-02-PLAN.md — list_sessions and destroy_session tools + session tracking unit tests (AUTH-03) (completed 2026-02-22)
 
 ### Phase 7: Update Management
 **Goal**: Claude can check whether a newer crawl4ai version is available mid-session, the server warns on startup if outdated, and a safe offline update script handles upgrades without in-process pip calls
@@ -128,21 +129,33 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 07-01-PLAN.md — check_update MCP tool + helpers + non-blocking startup version check + unit tests (UPDT-01, UPDT-02)
-- [ ] 07-02-PLAN.md — scripts/update.sh: offline upgrade with Playwright reinstall and smoke test (UPDT-03)
+- [x] 07-01-PLAN.md — check_update MCP tool + helpers + non-blocking startup version check + unit tests (UPDT-01, UPDT-02) (completed 2026-02-22)
+- [x] 07-02-PLAN.md — scripts/update.sh: offline upgrade with Playwright reinstall and smoke test (UPDT-03) (completed 2026-02-22)
+
+### Phase 8: Verify Profile System & Close Traceability
+**Goal**: Formally verify Phase 3 (Profile System) to close the 4 orphaned PROF requirements, and update REQUIREMENTS.md traceability for all phases
+**Depends on**: Phase 3
+**Requirements**: PROF-01, PROF-02, PROF-03, PROF-04
+**Gap Closure:** Closes all gaps from v1.0 milestone audit
+**Success Criteria** (what must be TRUE):
+  1. Phase 3 has a VERIFICATION.md that confirms PROF-01 through PROF-04 are satisfied by the existing code
+  2. REQUIREMENTS.md traceability table reflects accurate completion status for all 28 requirements
+  3. Re-running the milestone audit produces `passed` status with 28/28 requirements
+**Plans**: TBD (run `/gsd:plan-phase 8`)
 
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
-Note: Phase 6 depends only on Phase 2 and Phase 7 depends only on Phase 1 — these can be worked after their dependencies complete regardless of the other phases' status.
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
+Note: Phase 8 is a gap closure phase from the v1.0 milestone audit.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete | 2026-02-20 |
 | 2. Core Crawl | 2/2 | Complete | 2026-02-20 |
 | 3. Profile System | 3/3 | Complete | 2026-02-20 |
-| 4. Extraction | 2/2 | Complete    | 2026-02-20 |
-| 5. Multi-Page Crawl | 0/3 | Complete    | 2026-02-22 |
-| 6. Authentication & Sessions | 0/2 | Not started | - |
-| 7. Update Management | 0/2 | Not started | - |
+| 4. Extraction | 2/2 | Complete | 2026-02-20 |
+| 5. Multi-Page Crawl | 3/3 | Complete | 2026-02-22 |
+| 6. Authentication & Sessions | 2/2 | Complete | 2026-02-22 |
+| 7. Update Management | 2/2 | Complete | 2026-02-22 |
+| 8. Verify Profile System & Close Traceability | 0/? | Not started | - |

@@ -9,26 +9,26 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Infrastructure
 
-- [ ] **INFRA-01**: Server starts via `uv run` with stdio transport and registers correctly as a Claude Code global MCP server
-- [ ] **INFRA-02**: All server output (logs, errors, debug) goes to stderr only — stdout is never written to (protects MCP transport)
-- [ ] **INFRA-03**: A single `AsyncWebCrawler` instance is created at server startup via FastMCP lifespan and reused across all tool calls (prevents browser memory leaks)
-- [ ] **INFRA-04**: Server handles crawler errors gracefully — returns structured error responses to Claude rather than crashing
-- [ ] **INFRA-05**: README documents how to register the server as a Claude Code global MCP server with exact config snippet
+- [x] **INFRA-01**: Server starts via `uv run` with stdio transport and registers correctly as a Claude Code global MCP server
+- [x] **INFRA-02**: All server output (logs, errors, debug) goes to stderr only — stdout is never written to (protects MCP transport)
+- [x] **INFRA-03**: A single `AsyncWebCrawler` instance is created at server startup via FastMCP lifespan and reused across all tool calls (prevents browser memory leaks)
+- [x] **INFRA-04**: Server handles crawler errors gracefully — returns structured error responses to Claude rather than crashing
+- [x] **INFRA-05**: README documents how to register the server as a Claude Code global MCP server with exact config snippet
 
 ### Core Crawl
 
-- [ ] **CORE-01**: User can crawl a single URL and receive clean markdown content (with fit_markdown content filtering applied by default)
-- [ ] **CORE-02**: User can control JavaScript rendering per-call (headless/headful toggle, execute arbitrary js_code, wait_for CSS selector before extracting)
-- [ ] **CORE-03**: User can pass custom HTTP request parameters per-call (headers dict, cookies dict, user-agent string, timeout seconds)
-- [ ] **CORE-04**: User can control crawl4ai cache behavior per-call (bypass cache, force refresh, use cached if available)
-- [ ] **CORE-05**: User can specify content extraction scope via CSS selectors (include only matching elements, exclude noise elements)
+- [x] **CORE-01**: User can crawl a single URL and receive clean markdown content (with fit_markdown content filtering applied by default)
+- [x] **CORE-02**: User can control JavaScript rendering per-call (headless/headful toggle, execute arbitrary js_code, wait_for CSS selector before extracting)
+- [x] **CORE-03**: User can pass custom HTTP request parameters per-call (headers dict, cookies dict, user-agent string, timeout seconds)
+- [x] **CORE-04**: User can control crawl4ai cache behavior per-call (bypass cache, force refresh, use cached if available)
+- [x] **CORE-05**: User can specify content extraction scope via CSS selectors (include only matching elements, exclude noise elements)
 
 ### Extraction
 
-- [ ] **EXTR-01**: User can extract structured JSON from a page using an LLM (provide Pydantic-compatible JSON schema + natural language instruction; tool warns about LLM cost before executing)
-- [ ] **EXTR-02**: User can extract structured JSON from a page using CSS/JSON selectors (deterministic, no LLM cost; baseSelector + field definitions)
-- [ ] **EXTR-03**: LLM extraction requires explicit opt-in (no LLM calls happen unless user explicitly calls the extraction tool — never triggered implicitly by the crawl tool)
-- [ ] **EXTR-04**: LLM API keys for extraction are read from environment variables on the MCP server process (not passed as tool parameters)
+- [x] **EXTR-01**: User can extract structured JSON from a page using an LLM (provide Pydantic-compatible JSON schema + natural language instruction; tool warns about LLM cost before executing)
+- [x] **EXTR-02**: User can extract structured JSON from a page using CSS/JSON selectors (deterministic, no LLM cost; baseSelector + field definitions)
+- [x] **EXTR-03**: LLM extraction requires explicit opt-in (no LLM calls happen unless user explicitly calls the extraction tool — never triggered implicitly by the crawl tool)
+- [x] **EXTR-04**: LLM API keys for extraction are read from environment variables on the MCP server process (not passed as tool parameters)
 
 ### Multi-Page Crawl
 
@@ -98,24 +98,24 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INFRA-01 | Phase 1 | Pending |
-| INFRA-02 | Phase 1 | Pending |
-| INFRA-03 | Phase 1 | Pending |
-| INFRA-04 | Phase 1 | Pending |
-| INFRA-05 | Phase 1 | Pending |
-| CORE-01 | Phase 2 | Pending |
-| CORE-02 | Phase 2 | Pending |
-| CORE-03 | Phase 2 | Pending |
-| CORE-04 | Phase 2 | Pending |
-| CORE-05 | Phase 2 | Pending |
+| INFRA-01 | Phase 1 | Complete |
+| INFRA-02 | Phase 1 | Complete |
+| INFRA-03 | Phase 1 | Complete |
+| INFRA-04 | Phase 1 | Complete |
+| INFRA-05 | Phase 1 | Complete |
+| CORE-01 | Phase 2 | Complete |
+| CORE-02 | Phase 2 | Complete |
+| CORE-03 | Phase 2 | Complete |
+| CORE-04 | Phase 2 | Complete |
+| CORE-05 | Phase 2 | Complete |
 | PROF-01 | Phase 3 | Pending |
 | PROF-02 | Phase 3 | Pending |
 | PROF-03 | Phase 3 | Pending |
 | PROF-04 | Phase 3 | Pending |
-| EXTR-01 | Phase 4 | Pending |
-| EXTR-02 | Phase 4 | Pending |
-| EXTR-03 | Phase 4 | Pending |
-| EXTR-04 | Phase 4 | Pending |
+| EXTR-01 | Phase 4 | Complete |
+| EXTR-02 | Phase 4 | Complete |
+| EXTR-03 | Phase 4 | Complete |
+| EXTR-04 | Phase 4 | Complete |
 | MULTI-01 | Phase 5 | Complete |
 | MULTI-02 | Phase 5 | Complete |
 | MULTI-03 | Phase 5 | Complete |
@@ -130,8 +130,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 **Coverage:**
 - v1 requirements: 28 total
 - Mapped to phases: 28
-- Unmapped: 0 ✓
+- Complete: 24
+- Pending (orphaned — needs verification): 4 (PROF-01 through PROF-04)
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-19*
-*Last updated: 2026-02-19 — traceability confirmed after roadmap creation*
+*Last updated: 2026-02-22 — traceability updated per v1.0 milestone audit gap closure*
