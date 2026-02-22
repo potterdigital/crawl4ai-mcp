@@ -19,9 +19,9 @@ Progress: [██████████] 100%
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 15
+- Total plans completed: 16
 - Average duration: 2 minutes
-- Total execution time: 0.56 hours
+- Total execution time: 0.59 hours
 
 **By Phase:**
 
@@ -33,7 +33,7 @@ Progress: [██████████] 100%
 | 04-extraction | 2/2 | 5 min | 2.5 min |
 | 05-multi-page-crawl | 3/3 | 7 min | 2.3 min |
 | 06-authentication-sessions | 2/2 | 4 min | 2 min |
-| 07-update-management | 1/2 | 1 min | 1 min |
+| 07-update-management | 2/2 | 3 min | 1.5 min |
 
 **Recent Trend:**
 - Last 5 plans: 3 min, 2 min, 2 min, 2 min, 1 min
@@ -95,6 +95,10 @@ Recent decisions affecting current work:
 - [06-01]: Session cleanup uses kill_session in finally block — exceptions caught and ignored to ensure all sessions are attempted
 - [06-02]: destroy_session wraps kill_session in try/except — crawl4ai may auto-expire sessions before explicit destruction
 - [06-02]: list_sessions sorts sessions alphabetically by session_id for consistent output
+- [07-01]: httpx.AsyncClient created and closed within each helper (no persistent client) to avoid lifecycle issues
+- [07-01]: Startup version check uses 5s timeout (tighter than tool's 10s) to minimize startup impact
+- [07-01]: _startup_version_check wraps entire body in try/except Exception: pass to guarantee server startup
+- [07-01]: Changelog parsing extracts ### headers and - ** bullets, truncated to 20 lines
 - [07-02]: httpx for PyPI version check (already a crawl4ai transitive dep, no new dependency)
 - [07-02]: Exit 0 on pin range block (informational, not an error)
 - [07-02]: Playwright reinstall only when version actually changed (skip on pin range block)
@@ -112,5 +116,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-22
-Stopped at: Completed 07-02-PLAN.md — Phase 7 complete; all phases complete; project feature-complete
+Stopped at: Completed 07-01-PLAN.md — check_update tool + startup version check; all 16 plans complete; project feature-complete
 Resume file: None

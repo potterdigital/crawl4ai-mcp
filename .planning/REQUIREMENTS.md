@@ -52,8 +52,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Update Management
 
-- [ ] **UPDT-01**: User can check for crawl4ai updates via a `check_update` MCP tool (queries PyPI JSON API, compares installed vs latest version, shows changelog summary)
-- [ ] **UPDT-02**: Server logs a warning to stderr on startup if a newer crawl4ai version is available than what is installed
+- [x] **UPDT-01**: User can check for crawl4ai updates via a `check_update` MCP tool (queries PyPI JSON API, compares installed vs latest version, shows changelog summary)
+- [x] **UPDT-02**: Server logs a warning to stderr on startup if a newer crawl4ai version is available than what is installed
 - [x] **UPDT-03**: A `scripts/update.sh` script is provided that safely updates crawl4ai (uv/pip upgrade), re-runs playwright install if needed, and confirms the server still starts correctly
 
 ## v2 Requirements
@@ -123,8 +123,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AUTH-01 | Phase 6 | Complete |
 | AUTH-02 | Phase 6 | Complete |
 | AUTH-03 | Phase 6 | Complete |
-| UPDT-01 | Phase 7 | Pending |
-| UPDT-02 | Phase 7 | Pending |
+| UPDT-01 | Phase 7 | Complete |
+| UPDT-02 | Phase 7 | Complete |
 | UPDT-03 | Phase 7 | Complete |
 
 **Coverage:**
