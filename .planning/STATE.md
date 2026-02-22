@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-19)
 
 **Core value:** Claude Code can crawl any page, extract any content (markdown or structured JSON), and orchestrate deep multi-page crawls — all through MCP tool calls, without leaving the coding session.
-**Current focus:** Phase 4 — Extraction (Complete — both extract_structured and extract_css tools delivered)
+**Current focus:** Phase 5 — Multi-Page Crawl (Plan 01 complete — crawl_many tool delivered)
 
 ## Current Position
 
-Phase: 4 of 7 (Extraction) — COMPLETE
-Plan: 2 of 2 in phase (04-02 complete — extract_css tool + unit tests)
-Status: Phase 04 complete; 48 tests pass; EXTR-01, EXTR-02, EXTR-03, EXTR-04 all satisfied; ready for Phase 5
-Last activity: 2026-02-20 — Completed Plan 04-02: extract_css MCP tool with CSS-selector JSON extraction, 6 new tests
+Phase: 5 of 7 (Multi-Page Crawl) — IN PROGRESS
+Plan: 1 of 3 in phase (05-01 complete — crawl_many tool + _format_multi_results helper)
+Status: Plan 05-01 complete; 54 tests pass; MULTI-01 and MULTI-04 satisfied; ready for Plan 05-02
+Last activity: 2026-02-22 — Completed Plan 05-01: crawl_many MCP tool with SemaphoreDispatcher concurrency, 6 new tests
 
-Progress: [███████░░░] 63%
+Progress: [████████░░] 69%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 10
+- Total plans completed: 11
 - Average duration: 2 minutes
-- Total execution time: 0.40 hours
+- Total execution time: 0.43 hours
 
 **By Phase:**
 
@@ -31,9 +31,10 @@ Progress: [███████░░░] 63%
 | 02-core-crawl | 2/2 | 3 min | 1.5 min |
 | 03-profile-system | 3/3 | 9 min | 3 min |
 | 04-extraction | 2/2 | 5 min | 2.5 min |
+| 05-multi-page-crawl | 1/3 | 2 min | 2 min |
 
 **Recent Trend:**
-- Last 5 plans: 2 min, 2 min, 4 min, 3 min, 2 min
+- Last 5 plans: 2 min, 4 min, 3 min, 2 min, 2 min
 - Trend: fast execution
 
 *Updated after each plan completion*
@@ -77,6 +78,9 @@ Recent decisions affecting current work:
 - [04-02]: Same direct CrawlerRunConfig construction for extract_css — extraction tools bypass profile merging
 - [04-02]: verbose=False on both JsonCssExtractionStrategy and CrawlerRunConfig — non-negotiable MCP transport safety
 - [04-02]: Empty result check includes "[]" string — JsonCssExtractionStrategy returns "[]" when no selectors match
+- [05-01]: SemaphoreDispatcher with no monitor or rate_limiter — predictable concurrency without stdout corruption risk
+- [05-01]: Headers/cookies skipped for crawl_many v1 — arun_many manages its own sessions; document limitation
+- [05-01]: deep_crawl_strategy added to _PER_CALL_KEYS (not KNOWN_KEYS) — per-call only, never in YAML profiles
 
 ### Pending Todos
 
@@ -90,6 +94,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-20
-Stopped at: Completed Plan 04-02 — Phase 4 (Extraction) complete; extract_css + extract_structured tools; 48 tests pass; ready for Phase 5
+Last session: 2026-02-22
+Stopped at: Completed Plan 05-01 — crawl_many MCP tool with SemaphoreDispatcher; _format_multi_results helper; 54 tests pass; ready for Plan 05-02
 Resume file: None
