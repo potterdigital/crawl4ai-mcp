@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Core Crawl** - Single-URL crawl tool with full parameter control and clean markdown output (completed 2026-02-20)
 - [x] **Phase 3: Profile System** - Named crawl profiles with per-call override merging (completed 2026-02-20)
 - [x] **Phase 4: Extraction** - LLM-powered and CSS-based structured data extraction tools (completed 2026-02-20)
-- [ ] **Phase 5: Multi-Page Crawl** - Parallel batch crawling, deep BFS crawl, and sitemap crawl
+- [x] **Phase 5: Multi-Page Crawl** - Parallel batch crawling, deep BFS crawl, and sitemap crawl (completed 2026-02-22)
 - [ ] **Phase 6: Authentication & Sessions** - Cookie injection and named browser session management
 - [ ] **Phase 7: Update Management** - Version checking, startup warnings, and offline update script
 
@@ -143,6 +143,6 @@ Note: Phase 6 depends only on Phase 2 and Phase 7 depends only on Phase 1 — th
 | 2. Core Crawl | 2/2 | Complete | 2026-02-20 |
 | 3. Profile System | 3/3 | Complete | 2026-02-20 |
 | 4. Extraction | 2/2 | Complete    | 2026-02-20 |
-| 5. Multi-Page Crawl | 0/3 | Not started | - |
+| 5. Multi-Page Crawl | 0/3 | Complete    | 2026-02-22 |
 | 6. Authentication & Sessions | 0/2 | Not started | - |
 | 7. Update Management | 0/2 | Not started | - |
