@@ -58,6 +58,7 @@ _PER_CALL_KEYS: frozenset[str] = frozenset(
         "js_code",
         "user_agent",
         "deep_crawl_strategy",
+        "session_id",  # AUTH-02: persistent named sessions
     }
 )
 

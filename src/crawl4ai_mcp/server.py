@@ -3,6 +3,8 @@ import gzip
 import logging
 import os
 import sys
+import time
+import uuid
 import xml.etree.ElementTree as ET
 
 # MUST be first: configure all logging to stderr before any library imports emit output.
@@ -50,10 +52,15 @@ class AppContext:
 
     profile_manager holds all loaded YAML profiles and is used by build_run_config
     to construct CrawlerRunConfig instances with profile + per-call merging.
+
+    sessions maps session_id strings to their creation timestamp (seconds since
+    epoch). Sessions are persistent browser pages that preserve cookies,
+    localStorage, and DOM state across crawl_url calls.
     """
 
     crawler: AsyncWebCrawler
     profile_manager: ProfileManager
+    sessions: dict[str, float]
 
 
 @asynccontextmanager
@@ -82,9 +89,16 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     profile_manager = ProfileManager()
     logger.info("Loaded %d profile(s): %s", len(profile_manager.names), profile_manager.names)
 
+    app_ctx = AppContext(crawler=crawler, profile_manager=profile_manager, sessions={})
     try:
-        yield AppContext(crawler=crawler, profile_manager=profile_manager)
+        yield app_ctx
     finally:
+        # Clean up active sessions before closing browser
+        for sid in list(app_ctx.sessions.keys()):
+            try:
+                await crawler.crawler_strategy.kill_session(sid)
+            except Exception:
+                pass
         logger.info("Shutting down browser")
         await crawler.close()
         logger.info("Shutdown complete")
