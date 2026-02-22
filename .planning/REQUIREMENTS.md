@@ -45,10 +45,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Profiles
 
-- [ ] **PROF-01**: Server ships with three built-in crawl profiles: `fast` (no JS, minimal timeout), `js-heavy` (full Playwright, extended wait), `stealth` (human-like delays, anti-bot headers)
-- [ ] **PROF-02**: User can view all available profiles and their full configuration via a `list_profiles` MCP tool
-- [ ] **PROF-03**: User can add/edit custom profiles by creating/modifying YAML files in `profiles/` directory without code changes
-- [ ] **PROF-04**: Any crawl tool call can specify a profile name as a starting point with per-call parameter overrides (merge order: default → profile → per-call overrides)
+- [x] **PROF-01**: Server ships with three built-in crawl profiles: `fast` (no JS, minimal timeout), `js-heavy` (full Playwright, extended wait), `stealth` (human-like delays, anti-bot headers)
+- [x] **PROF-02**: User can view all available profiles and their full configuration via a `list_profiles` MCP tool
+- [x] **PROF-03**: User can add/edit custom profiles by creating/modifying YAML files in `profiles/` directory without code changes
+- [x] **PROF-04**: Any crawl tool call can specify a profile name as a starting point with per-call parameter overrides (merge order: default → profile → per-call overrides)
 
 ### Update Management
 
@@ -108,10 +108,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CORE-03 | Phase 2 | Complete |
 | CORE-04 | Phase 2 | Complete |
 | CORE-05 | Phase 2 | Complete |
-| PROF-01 | Phase 3 | Pending |
-| PROF-02 | Phase 3 | Pending |
-| PROF-03 | Phase 3 | Pending |
-| PROF-04 | Phase 3 | Pending |
+| PROF-01 | Phase 3 | Complete |
+| PROF-02 | Phase 3 | Complete |
+| PROF-03 | Phase 3 | Complete |
+| PROF-04 | Phase 3 | Complete |
 | EXTR-01 | Phase 4 | Complete |
 | EXTR-02 | Phase 4 | Complete |
 | EXTR-03 | Phase 4 | Complete |
@@ -130,10 +130,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 **Coverage:**
 - v1 requirements: 28 total
 - Mapped to phases: 28
-- Complete: 24
-- Pending (orphaned — needs verification): 4 (PROF-01 through PROF-04)
+- Complete: 28
+- Pending: 0
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-19*
-*Last updated: 2026-02-22 — traceability updated per v1.0 milestone audit gap closure*
+*Last updated: 2026-02-22 — all 28 v1 requirements complete; Phase 8 closed PROF-01..04 traceability gap*
