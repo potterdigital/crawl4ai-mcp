@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-19)
 
 **Core value:** Claude Code can crawl any page, extract any content (markdown or structured JSON), and orchestrate deep multi-page crawls — all through MCP tool calls, without leaving the coding session.
-**Current focus:** Phase 4 — Extraction (Complete — both extract_structured and extract_css tools delivered)
+**Current focus:** Phase 5 — Multi-Page Crawl (Plan 02 complete — deep_crawl tool with BFS strategy)
 
 ## Current Position
 
-Phase: 4 of 7 (Extraction) — COMPLETE
-Plan: 2 of 2 in phase (04-02 complete — extract_css tool + unit tests)
-Status: Phase 04 complete; 48 tests pass; EXTR-01, EXTR-02, EXTR-03, EXTR-04 all satisfied; ready for Phase 5
-Last activity: 2026-02-20 — Completed Plan 04-02: extract_css MCP tool with CSS-selector JSON extraction, 6 new tests
+Phase: 5 of 7 (Multi-Page Crawl) — IN PROGRESS
+Plan: 2 of 3 in phase (05-02 complete — deep_crawl MCP tool with BFS strategy and filter chain)
+Status: deep_crawl tool delivered; 58 tests pass; MULTI-02, MULTI-04 satisfied; Plans 01 and 03 remaining
+Last activity: 2026-02-22 — Completed Plan 05-02: deep_crawl MCP tool with BFS link-following, 10 new tests
 
-Progress: [███████░░░] 63%
+Progress: [████████░░] 75%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 10
+- Total plans completed: 11
 - Average duration: 2 minutes
-- Total execution time: 0.40 hours
+- Total execution time: 0.45 hours
 
 **By Phase:**
 
@@ -31,9 +31,10 @@ Progress: [███████░░░] 63%
 | 02-core-crawl | 2/2 | 3 min | 1.5 min |
 | 03-profile-system | 3/3 | 9 min | 3 min |
 | 04-extraction | 2/2 | 5 min | 2.5 min |
+| 05-multi-page-crawl | 1/3 | 3 min | 3 min |
 
 **Recent Trend:**
-- Last 5 plans: 2 min, 2 min, 4 min, 3 min, 2 min
+- Last 5 plans: 2 min, 4 min, 3 min, 2 min, 3 min
 - Trend: fast execution
 
 *Updated after each plan completion*
@@ -77,6 +78,11 @@ Recent decisions affecting current work:
 - [04-02]: Same direct CrawlerRunConfig construction for extract_css — extraction tools bypass profile merging
 - [04-02]: verbose=False on both JsonCssExtractionStrategy and CrawlerRunConfig — non-negotiable MCP transport safety
 - [04-02]: Empty result check includes "[]" string — JsonCssExtractionStrategy returns "[]" when no selectors match
+- [05-02]: BFSDeepCrawlStrategy created fresh per call — mutable state (_pages_crawled, _cancel_event) prevents reuse
+- [05-02]: deep_crawl_strategy added to _PER_CALL_KEYS — preserves profile merging for per-page crawl config
+- [05-02]: scope parameter maps to include_external boolean — no DomainFilter import needed
+- [05-02]: No monitor parameter on any dispatcher — CrawlerMonitor uses Rich Console which writes to stdout
+- [05-02]: Headers/cookies not supported for deep_crawl v1 — documented limitation in docstring
 
 ### Pending Todos
 
@@ -90,6 +96,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-20
-Stopped at: Completed Plan 04-02 — Phase 4 (Extraction) complete; extract_css + extract_structured tools; 48 tests pass; ready for Phase 5
+Last session: 2026-02-22
+Stopped at: Completed Plan 05-02 — deep_crawl MCP tool with BFS link-following; 58 tests pass; Plans 01 and 03 remaining in Phase 5
 Resume file: None

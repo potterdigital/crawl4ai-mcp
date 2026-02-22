@@ -33,9 +33,9 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Multi-Page Crawl
 
 - [ ] **MULTI-01**: User can crawl multiple URLs in parallel (pass list of URLs; returns all results concurrently via arun_many())
-- [ ] **MULTI-02**: User can deep-crawl a site via link-following with BFS strategy (start URL + max_depth + max_pages hard limit; max_pages defaults to 50)
+- [x] **MULTI-02**: User can deep-crawl a site via link-following with BFS strategy (start URL + max_depth + max_pages hard limit; max_pages defaults to 50)
 - [ ] **MULTI-03**: User can crawl all URLs from a sitemap (pass sitemap XML URL; server fetches, parses, and crawls all discovered URLs)
-- [ ] **MULTI-04**: Deep crawl and batch crawl enforce hard limits on page count and total runtime to prevent runaway crawls
+- [x] **MULTI-04**: Deep crawl and batch crawl enforce hard limits on page count and total runtime to prevent runaway crawls
 
 ### Authentication & Sessions
 
@@ -117,9 +117,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EXTR-03 | Phase 4 | Pending |
 | EXTR-04 | Phase 4 | Pending |
 | MULTI-01 | Phase 5 | Pending |
-| MULTI-02 | Phase 5 | Pending |
+| MULTI-02 | Phase 5 | Complete |
 | MULTI-03 | Phase 5 | Pending |
-| MULTI-04 | Phase 5 | Pending |
+| MULTI-04 | Phase 5 | Complete |
 | AUTH-01 | Phase 6 | Pending |
 | AUTH-02 | Phase 6 | Pending |
 | AUTH-03 | Phase 6 | Pending |
