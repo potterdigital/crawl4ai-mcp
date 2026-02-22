@@ -111,11 +111,11 @@ Plans:
   1. Claude can pass a cookies dict to any crawl tool call and those cookies are applied to that request only — they do not persist to subsequent calls
   2. Claude can create a named session, make multiple crawl calls referencing that session name, and the browser maintains cookies and state across all of them
   3. Claude can call `list_sessions` to see all active named sessions and `destroy_session` to close one
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 06-01: Cookie injection param on crawl tool (per-call, non-persistent); AUTH-01
-- [ ] 06-02: Named session creation, session-scoped crawl calls, list_sessions and destroy_session tools
+- [ ] 06-01-PLAN.md — Session infrastructure: AppContext.sessions, session_id on crawl_url, create_session tool, cleanup on shutdown (AUTH-01, AUTH-02)
+- [ ] 06-02-PLAN.md — list_sessions and destroy_session tools + session tracking unit tests (AUTH-03)
 
 ### Phase 7: Update Management
 **Goal**: Claude can check whether a newer crawl4ai version is available mid-session, the server warns on startup if outdated, and a safe offline update script handles upgrades without in-process pip calls
