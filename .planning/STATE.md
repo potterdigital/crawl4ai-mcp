@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-19)
 
 **Core value:** Claude Code can crawl any page, extract any content (markdown or structured JSON), and orchestrate deep multi-page crawls — all through MCP tool calls, without leaving the coding session.
-**Current focus:** Phase 5 — Multi-Page Crawl (Plans 01+02 complete — crawl_many + deep_crawl delivered)
+**Current focus:** Phase 5 complete — Multi-Page Crawl (crawl_many + deep_crawl + crawl_sitemap delivered)
 
 ## Current Position
 
-Phase: 5 of 7 (Multi-Page Crawl) — IN PROGRESS
-Plan: 2 of 3 in phase (05-01 + 05-02 complete — crawl_many + deep_crawl tools)
-Status: Plans 05-01 and 05-02 complete; MULTI-01, MULTI-02, MULTI-04 satisfied; ready for Plan 05-03
-Last activity: 2026-02-22 — Completed Wave 1: crawl_many + deep_crawl in parallel
+Phase: 5 of 7 (Multi-Page Crawl) — COMPLETE
+Plan: 3 of 3 in phase (05-01 + 05-02 + 05-03 complete — all multi-page tools)
+Status: Phase 5 complete; MULTI-01, MULTI-02, MULTI-03, MULTI-04 satisfied; ready for Phase 6 or 7
+Last activity: 2026-02-22 — Completed Plan 05-03: crawl_sitemap tool
 
-Progress: [████████░░] 75%
+Progress: [████████░░] 80%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 11
+- Total plans completed: 12
 - Average duration: 2 minutes
-- Total execution time: 0.45 hours
+- Total execution time: 0.48 hours
 
 **By Phase:**
 
@@ -31,10 +31,10 @@ Progress: [████████░░] 75%
 | 02-core-crawl | 2/2 | 3 min | 1.5 min |
 | 03-profile-system | 3/3 | 9 min | 3 min |
 | 04-extraction | 2/2 | 5 min | 2.5 min |
-| 05-multi-page-crawl | 2/3 | 5 min | 2.5 min |
+| 05-multi-page-crawl | 3/3 | 7 min | 2.3 min |
 
 **Recent Trend:**
-- Last 5 plans: 4 min, 3 min, 2 min, 2 min, 3 min
+- Last 5 plans: 3 min, 2 min, 2 min, 3 min, 2 min
 - Trend: fast execution
 
 *Updated after each plan completion*
@@ -85,6 +85,9 @@ Recent decisions affecting current work:
 - [05-02]: scope parameter maps to include_external boolean — no DomainFilter import needed
 - [05-02]: No monitor parameter on any dispatcher — CrawlerMonitor uses Rich Console which writes to stdout
 - [05-02]: Headers/cookies not supported for deep_crawl v1 — documented limitation in docstring
+- [05-03]: httpx for sitemap fetching (not browser) — sitemaps are plain XML, no JS rendering needed
+- [05-03]: Recursive resolution for sitemap index files — transparent to the caller
+- [05-03]: max_urls default 500 — prevents runaway crawls on large sitemaps (50K+ URLs common)
 
 ### Pending Todos
 
@@ -99,5 +102,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-22
-Stopped at: Completed Wave 1 (Plans 05-01 + 05-02) — crawl_many + deep_crawl tools; ready for Wave 2 (Plan 05-03 crawl_sitemap)
+Stopped at: Completed 05-03-PLAN.md — Phase 5 (Multi-Page Crawl) complete; ready for Phase 6 or 7
 Resume file: None
