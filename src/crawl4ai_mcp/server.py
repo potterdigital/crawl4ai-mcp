@@ -1,7 +1,9 @@
 # src/crawl4ai_mcp/server.py
+import gzip
 import logging
 import os
 import sys
+import xml.etree.ElementTree as ET
 
 # MUST be first: configure all logging to stderr before any library imports emit output.
 # Any output to stdout corrupts the MCP stdio JSON-RPC transport.
@@ -31,6 +33,7 @@ from crawl4ai.deep_crawling import (
     FilterChain,
     URLPatternFilter,
 )
+import httpx
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
@@ -176,6 +179,45 @@ def _format_multi_results(results: list, include_content: bool = True) -> str:
             parts.append(f"- {result.url}: {result.error_message}")
 
     return "\n".join(parts)
+
+
+SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+
+
+async def _fetch_sitemap_urls(sitemap_url: str) -> list[str]:
+    """Fetch and parse a sitemap XML, returning all <loc> URLs.
+
+    Handles:
+    - Regular sitemaps (<urlset> with <url><loc>)
+    - Sitemap indexes (<sitemapindex> with <sitemap><loc>) -- recursively resolved
+    - Gzipped sitemaps (.xml.gz) -- automatically decompressed
+    - Sitemaps with or without XML namespace prefix
+    """
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+        resp = await client.get(sitemap_url)
+        resp.raise_for_status()
+
+    content = resp.content
+    if sitemap_url.endswith(".gz"):
+        content = gzip.decompress(content)
+
+    root = ET.fromstring(content)
+
+    # Check if this is a sitemap index
+    sub_sitemaps = root.findall("sm:sitemap/sm:loc", SITEMAP_NS)
+    if sub_sitemaps:
+        urls: list[str] = []
+        for loc_elem in sub_sitemaps:
+            sub_urls = await _fetch_sitemap_urls(loc_elem.text.strip())
+            urls.extend(sub_urls)
+        return urls
+
+    # Regular sitemap -- extract <url><loc> entries
+    # Try with namespace first, then without (some sitemaps omit namespace)
+    locs = root.findall("sm:url/sm:loc", SITEMAP_NS)
+    if not locs:
+        locs = root.findall("url/loc")
+    return [loc.text.strip() for loc in locs if loc.text]
 
 
 async def _crawl_with_overrides(
@@ -825,6 +867,138 @@ async def deep_crawl(
     results = await app.crawler.arun(url=url, config=run_cfg)
 
     return _format_multi_results(results)
+
+
+@mcp.tool()
+async def crawl_sitemap(
+    sitemap_url: str,
+    max_urls: int = 500,
+    max_concurrent: int = 10,
+    profile: str | None = None,
+    cache_mode: str = "enabled",
+    css_selector: str | None = None,
+    excluded_selector: str | None = None,
+    wait_for: str | None = None,
+    js_code: str | None = None,
+    user_agent: str | None = None,
+    page_timeout: int = 60,
+    word_count_threshold: int = 10,
+    ctx: Context[ServerSession, AppContext] = None,
+) -> str:
+    """Crawl all pages listed in an XML sitemap.
+
+    Fetches the sitemap XML via HTTP (not the browser -- sitemaps are plain XML),
+    extracts all <loc> URLs, and crawls them concurrently via arun_many.
+
+    Sitemap index files (<sitemapindex>) are automatically resolved by recursively
+    fetching each referenced sub-sitemap. Gzipped sitemaps (.xml.gz) are
+    automatically decompressed.
+
+    Individual URL failures never fail the entire batch -- the result always
+    includes both successes and failures so you can reason about partial results.
+
+    Args:
+        sitemap_url: URL of the XML sitemap (e.g. "https://example.com/sitemap.xml").
+
+        max_urls: Maximum number of sitemap URLs to crawl (default 500). Large
+            sitemaps can contain 50,000+ URLs -- this prevents runaway crawls.
+            URLs beyond this limit are silently truncated with a note in the output.
+
+        max_concurrent: Maximum number of URLs to crawl simultaneously
+            (default 10). Higher values are faster but use more memory.
+
+        profile: Named crawl profile for per-page configuration.
+        cache_mode: Cache behavior (same as crawl_url).
+        css_selector: Restrict extraction to matching elements on each page.
+        excluded_selector: Exclude matching elements from extraction.
+        wait_for: Wait condition before extracting each page.
+        js_code: JavaScript to execute on each page before extraction.
+        user_agent: Override User-Agent string.
+        page_timeout: Page load timeout in seconds (default 60).
+        word_count_threshold: Minimum word count for content blocks (default 10).
+
+    Note:
+        Per-call headers and cookies are not supported for sitemap crawls.
+        Use crawl_url for requests requiring custom headers or cookies.
+    """
+    _CACHE_MAP = {
+        "enabled": CacheMode.ENABLED,
+        "bypass": CacheMode.BYPASS,
+        "disabled": CacheMode.DISABLED,
+        "read_only": CacheMode.READ_ONLY,
+        "write_only": CacheMode.WRITE_ONLY,
+    }
+    resolved_cache = _CACHE_MAP.get(cache_mode, CacheMode.ENABLED)
+    if cache_mode not in _CACHE_MAP:
+        logger.warning("Unknown cache_mode %r -- defaulting to 'enabled'", cache_mode)
+
+    logger.info(
+        "crawl_sitemap: %s (max_urls=%d, max_concurrent=%d)",
+        sitemap_url, max_urls, max_concurrent,
+    )
+
+    # Fetch and parse sitemap XML via httpx (not the browser)
+    try:
+        urls = await _fetch_sitemap_urls(sitemap_url)
+    except (httpx.HTTPError, ET.ParseError) as e:
+        return (
+            f"Sitemap fetch failed\n"
+            f"URL: {sitemap_url}\n"
+            f"Error: {e}"
+        )
+
+    if not urls:
+        return (
+            f"No URLs found in sitemap\n"
+            f"URL: {sitemap_url}\n"
+            f"The sitemap may be empty or use an unsupported format."
+        )
+
+    # Truncate if over max_urls
+    total_sitemap_urls = len(urls)
+    truncated = total_sitemap_urls > max_urls
+    if truncated:
+        urls = urls[:max_urls]
+
+    # Build per-call kwargs -- only include optional params when explicitly set
+    per_call_kwargs: dict = {
+        "cache_mode": resolved_cache,
+        "page_timeout": page_timeout * 1000,
+    }
+    if css_selector is not None:
+        per_call_kwargs["css_selector"] = css_selector
+    if excluded_selector is not None:
+        per_call_kwargs["excluded_selector"] = excluded_selector
+    if wait_for is not None:
+        per_call_kwargs["wait_for"] = wait_for
+    if js_code is not None:
+        per_call_kwargs["js_code"] = js_code
+    if user_agent is not None:
+        per_call_kwargs["user_agent"] = user_agent
+    if word_count_threshold != 10:
+        per_call_kwargs["word_count_threshold"] = word_count_threshold
+
+    app: AppContext = ctx.request_context.lifespan_context
+    run_cfg = build_run_config(app.profile_manager, profile, **per_call_kwargs)
+
+    dispatcher = SemaphoreDispatcher(
+        semaphore_count=max_concurrent,
+        # NO monitor -- CrawlerMonitor uses Rich Console -> stdout corruption
+    )
+
+    results = await app.crawler.arun_many(
+        urls=urls,
+        config=run_cfg,
+        dispatcher=dispatcher,
+    )
+
+    output = _format_multi_results(results)
+    if truncated:
+        output = (
+            f"Note: Sitemap contained {total_sitemap_urls} URLs; "
+            f"crawled first {max_urls} (max_urls limit).\n\n{output}"
+        )
+    return output
 
 
 def main() -> None:
