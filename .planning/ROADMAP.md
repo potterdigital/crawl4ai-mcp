@@ -96,12 +96,12 @@ Plans:
   2. Claude can call `deep_crawl` with a start URL, max_depth, and max_pages and the crawl stops at those hard limits even if more links exist
   3. Claude can call `crawl_sitemap` with a sitemap XML URL and receive crawl results for all discovered URLs
   4. A deep crawl or batch crawl that would exceed the page count or runtime limit is automatically cut off with a summary of what was collected before the limit
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 05-01: crawl_many tool (arun_many with SemaphoreDispatcher, concurrency cap, result aggregation)
-- [ ] 05-02: deep_crawl tool (BFS strategy, hard max_depth/max_pages caps, tool-level timeout)
-- [ ] 05-03: crawl_sitemap tool (fetch + parse sitemap XML, crawl discovered URLs via crawl_many)
+- [ ] 05-01-PLAN.md — crawl_many tool with SemaphoreDispatcher, _format_multi_results helper, _PER_CALL_KEYS update
+- [ ] 05-02-PLAN.md — deep_crawl tool with BFSDeepCrawlStrategy, FilterChain URL filtering, agent-configurable scope
+- [ ] 05-03-PLAN.md — crawl_sitemap tool with httpx XML parsing, recursive sitemap index resolution, max_urls limit
 
 ### Phase 6: Authentication & Sessions
 **Goal**: Claude can inject cookies into any single crawl call and can create persistent named browser sessions that survive across multiple tool calls for multi-step authenticated workflows
