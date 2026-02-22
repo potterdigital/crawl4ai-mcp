@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-19)
 
 **Core value:** Claude Code can crawl any page, extract any content (markdown or structured JSON), and orchestrate deep multi-page crawls — all through MCP tool calls, without leaving the coding session.
-**Current focus:** Phase 7 complete — Update Management (UPDT-03 satisfied); all 7 phases complete
+**Current focus:** Phase 8 complete — Verify Profiles Traceability (PROF-01..04 verified); v1.0 milestone audit passed 28/28
 
 ## Current Position
 
-Phase: 7 of 7 (Update Management) — COMPLETE
-Plan: 2 of 2 in phase (07-02 complete — offline update script with Playwright reinstall and smoke test)
-Status: Phase 7 complete; all phases complete; project feature-complete
-Last activity: 2026-02-22 — Completed Plan 07-02: update script
+Phase: 8 of 8 (Verify Profiles Traceability) — COMPLETE
+Plan: 1 of 1 in phase (08-01 complete — 03-VERIFICATION.md created, REQUIREMENTS.md 28/28, milestone audit passed)
+Status: Phase 8 complete; all phases complete; v1.0 milestone fully passed
+Last activity: 2026-02-22 — Completed Plan 08-01: verify profiles and close traceability gap
 
 Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 16
+- Total plans completed: 17
 - Average duration: 2 minutes
-- Total execution time: 0.59 hours
+- Total execution time: 0.64 hours
 
 **By Phase:**
 
@@ -34,9 +34,10 @@ Progress: [██████████] 100%
 | 05-multi-page-crawl | 3/3 | 7 min | 2.3 min |
 | 06-authentication-sessions | 2/2 | 4 min | 2 min |
 | 07-update-management | 2/2 | 3 min | 1.5 min |
+| 08-verify-profiles-traceability | 1/1 | 3 min | 3 min |
 
 **Recent Trend:**
-- Last 5 plans: 3 min, 2 min, 2 min, 2 min, 1 min
+- Last 5 plans: 2 min, 2 min, 2 min, 1 min, 3 min
 - Trend: fast execution
 
 *Updated after each plan completion*
@@ -102,6 +103,8 @@ Recent decisions affecting current work:
 - [07-02]: httpx for PyPI version check (already a crawl4ai transitive dep, no new dependency)
 - [07-02]: Exit 0 on pin range block (informational, not an error)
 - [07-02]: Playwright reinstall only when version actually changed (skip on pin range block)
+- [08-01]: PROF-01 "three built-in profiles" = fast, js_heavy, stealth; default.yaml is the base layer, not one of the three
+- [08-01]: 03-VERIFICATION.md created with current line numbers verified at time of writing; closes v1.0 milestone audit gap
 
 ### Pending Todos
 
@@ -116,5 +119,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-22
-Stopped at: Completed 07-01-PLAN.md — check_update tool + startup version check; all 16 plans complete; project feature-complete
+Stopped at: Completed 08-01-PLAN.md — Phase 3 verification + traceability gap closure; 17 plans complete; v1.0 milestone passed 28/28
 Resume file: None
