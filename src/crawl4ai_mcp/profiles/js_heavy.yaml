@@ -2,8 +2,8 @@
 # Waits for network idle; scrolls full page to trigger lazy loading.
 # page_timeout is in milliseconds.
 wait_until: networkidle
-page_timeout: 90000       # 90 seconds — allow long JS execution
-scan_full_page: true      # auto-scroll to trigger lazy-loaded content
-scroll_delay: 0.5         # seconds between scroll steps
-delay_before_return_html: 1.0  # wait 1s after networkidle before capturing
-remove_overlay_elements: true  # dismiss cookie banners and modals
+page_timeout: 90000 # 90 seconds — allow long JS execution
+scan_full_page: true # auto-scroll to trigger lazy-loaded content
+scroll_delay: 0.5 # seconds between scroll steps
+delay_before_return_html: 1.0 # wait 1s after networkidle before capturing
+remove_overlay_elements: true # dismiss cookie banners and modals

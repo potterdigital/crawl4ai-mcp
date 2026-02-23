@@ -2,5 +2,5 @@
 # Skips networkidle wait; short timeout; low word threshold.
 # page_timeout is in milliseconds.
 wait_until: domcontentloaded
-page_timeout: 15000      # 15 seconds — fail fast on slow pages
-word_count_threshold: 5  # retain short blocks on lightweight pages
+page_timeout: 15000 # 15 seconds — fail fast on slow pages
+word_count_threshold: 5 # retain short blocks on lightweight pages

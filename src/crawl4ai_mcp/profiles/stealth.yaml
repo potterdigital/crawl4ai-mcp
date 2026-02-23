@@ -2,11 +2,11 @@
 # BrowserConfig-level stealth (enable_stealth, user_agent_mode) is NOT supported
 # in profiles — those are singleton settings requiring a browser restart.
 # page_timeout is in milliseconds.
-simulate_user: true           # random mouse movements and human-like delays
-override_navigator: true      # mask headless browser navigator properties
-magic: true                   # auto-handle overlays, popups, and anti-bot checks
+simulate_user: true # random mouse movements and human-like delays
+override_navigator: true # mask headless browser navigator properties
+magic: true # auto-handle overlays, popups, and anti-bot checks
 delay_before_return_html: 2.0 # seconds to wait after page load before capture
-mean_delay: 1.5               # mean seconds of human-like delay between actions
-max_range: 2.0                # max variance in human delay (seconds)
+mean_delay: 1.5 # mean seconds of human-like delay between actions
+max_range: 2.0 # max variance in human delay (seconds)
 wait_until: networkidle
-page_timeout: 90000           # 90 seconds — stealth crawls take longer
+page_timeout: 90000 # 90 seconds — stealth crawls take longer
