@@ -37,6 +37,8 @@ htmlcov/
 CLAUDE.md
 .serena/
 .planning/
+.marketing/
+dev-docs/
 main.py
 
 # Environment

@@ -2,6 +2,7 @@
 import asyncio
 import gzip
 import importlib.metadata
+import json
 import logging
 import os
 import re
@@ -32,7 +33,7 @@ from crawl4ai import (
     LLMConfig,
     LLMExtractionStrategy,
 )
-from crawl4ai.async_dispatcher import SemaphoreDispatcher
+from crawl4ai.async_dispatcher import RateLimiter, SemaphoreDispatcher
 from crawl4ai.deep_crawling import (
     BFSDeepCrawlStrategy,
     FilterChain,
@@ -198,6 +199,73 @@ def _format_multi_results(results: list, include_content: bool = True) -> str:
         parts.append(f"\n## Failed URLs ({len(failures)})\n")
         for result in failures:
             parts.append(f"- {result.url}: {result.error_message}")
+
+    return "\n".join(parts)
+
+
+def _sanitize_filename(url: str) -> str:
+    """Convert a URL to a safe filename stem (no extension).
+
+    Strips scheme, replaces non-alphanumeric chars with underscores,
+    collapses runs, and trims to 200 chars.
+    """
+    name = re.sub(r"^https?://", "", url)
+    name = re.sub(r"[^a-zA-Z0-9]+", "_", name)
+    name = name.strip("_")[:200]
+    return name or "page"
+
+
+def _persist_results(results: list, output_dir: str) -> str:
+    """Write per-page .md files and a manifest.json to output_dir.
+
+    Returns a metadata-only summary string (no page content) listing
+    file paths and the manifest location.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    successes = [r for r in results if r.success]
+    failures = [r for r in results if not r.success]
+    manifest_entries: list[dict] = []
+
+    for result in successes:
+        stem = _sanitize_filename(result.url)
+        filename = f"{stem}.md"
+        filepath = os.path.join(output_dir, filename)
+
+        md = result.markdown
+        content = (md.fit_markdown or md.raw_markdown) if md else ""
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        entry: dict = {"url": result.url, "file": filename, "success": True}
+        if result.metadata and isinstance(result.metadata, dict):
+            if "depth" in result.metadata:
+                entry["depth"] = result.metadata["depth"]
+            if "parent_url" in result.metadata:
+                entry["parent_url"] = result.metadata["parent_url"]
+        manifest_entries.append(entry)
+
+    for result in failures:
+        manifest_entries.append({
+            "url": result.url,
+            "success": False,
+            "error": result.error_message,
+        })
+
+    manifest_path = os.path.join(output_dir, "manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest_entries, f, indent=2)
+
+    # Build summary (no page content — it's on disk)
+    parts = [
+        f"Saved {len(successes)} of {len(results)} pages to {output_dir}",
+        f"Manifest: {manifest_path}",
+    ]
+    for entry in manifest_entries:
+        if entry["success"]:
+            parts.append(f"  {entry['url']} -> {entry['file']}")
+        else:
+            parts.append(f"  {entry['url']} FAILED: {entry.get('error', 'unknown')}")
 
     return "\n".join(parts)
 
@@ -726,6 +794,8 @@ async def destroy_session(
 async def crawl_many(
     urls: list[str],
     max_concurrent: int = 10,
+    delay: float = 0,
+    output_dir: str | None = None,
     profile: str | None = None,
     cache_mode: str = "enabled",
     css_selector: str | None = None,
@@ -756,6 +826,14 @@ async def crawl_many(
         max_concurrent: Maximum number of URLs to crawl simultaneously
             (default 10). Higher values are faster but use more memory.
             There is no artificial cap — set as high as needed.
+
+        delay: Politeness delay in seconds between requests (default 0 — no
+            delay). When > 0, a RateLimiter paces requests to avoid
+            overwhelming target servers.
+
+        output_dir: Directory to write per-page .md files and a manifest.json.
+            When set, returns a metadata summary (file paths) instead of page
+            content. When None (default), returns full content inline.
 
         profile: Name of a crawl profile to use as base configuration.
             Per-call parameters take precedence over profile values.
@@ -798,7 +876,7 @@ async def crawl_many(
     if cache_mode not in _CACHE_MAP:
         logger.warning("Unknown cache_mode %r — defaulting to 'enabled'", cache_mode)
 
-    logger.info("crawl_many: %d URLs (max_concurrent=%d, profile=%s)", len(urls), max_concurrent, profile)
+    logger.info("crawl_many: %d URLs (max_concurrent=%d, delay=%.1f, profile=%s)", len(urls), max_concurrent, delay, profile)
 
     # Build per-call kwargs — only include optional params when explicitly set
     per_call_kwargs: dict = {
@@ -821,10 +899,11 @@ async def crawl_many(
     app: AppContext = ctx.request_context.lifespan_context
     run_cfg = build_run_config(app.profile_manager, profile, **per_call_kwargs)
 
+    rate_limiter = RateLimiter(base_delay=(delay, delay)) if delay > 0 else None
     dispatcher = SemaphoreDispatcher(
         semaphore_count=max_concurrent,
+        rate_limiter=rate_limiter,
         # NO monitor — CrawlerMonitor uses Rich Console -> stdout corruption
-        # NO rate_limiter — fast batch crawl by default
     )
 
     results = await app.crawler.arun_many(
@@ -833,6 +912,8 @@ async def crawl_many(
         dispatcher=dispatcher,
     )
 
+    if output_dir:
+        return _persist_results(results, output_dir)
     return _format_multi_results(results)
 
 
@@ -1029,6 +1110,8 @@ async def deep_crawl(
     scope: str = "same-domain",
     include_pattern: str | None = None,
     exclude_pattern: str | None = None,
+    delay: float = 0,
+    output_dir: str | None = None,
     profile: str | None = None,
     cache_mode: str = "enabled",
     css_selector: str | None = None,
@@ -1075,6 +1158,13 @@ async def deep_crawl(
             "/internal/*" to skip internal links). URLs matching this pattern
             will not be crawled.
 
+        delay: Politeness delay in seconds between page fetches (default 0 —
+            no delay). Passed as delay_before_return_html to crawl4ai.
+
+        output_dir: Directory to write per-page .md files and a manifest.json.
+            When set, returns a metadata summary (file paths) instead of page
+            content. When None (default), returns full content inline.
+
         profile: Named crawl profile for per-page configuration.
         cache_mode: Cache behavior (same as crawl_url).
         css_selector: Restrict extraction to matching elements on each page.
@@ -1101,8 +1191,8 @@ async def deep_crawl(
         logger.warning("Unknown cache_mode %r — defaulting to 'enabled'", cache_mode)
 
     logger.info(
-        "deep_crawl: %s (depth=%d, max_pages=%d, scope=%s)",
-        url, max_depth, max_pages, scope,
+        "deep_crawl: %s (depth=%d, max_pages=%d, scope=%s, delay=%.1f)",
+        url, max_depth, max_pages, scope, delay,
     )
 
     # Build filter chain from agent params
@@ -1136,6 +1226,8 @@ async def deep_crawl(
         "page_timeout": page_timeout * 1000,
         "deep_crawl_strategy": strategy,
     }
+    if delay > 0:
+        per_call_kwargs["delay_before_return_html"] = delay
     if css_selector is not None:
         per_call_kwargs["css_selector"] = css_selector
     if excluded_selector is not None:
@@ -1155,6 +1247,8 @@ async def deep_crawl(
     # When deep_crawl_strategy is set, arun() returns List[CrawlResult]
     results = await app.crawler.arun(url=url, config=run_cfg)
 
+    if output_dir:
+        return _persist_results(results, output_dir)
     return _format_multi_results(results)
 
 
@@ -1163,6 +1257,8 @@ async def crawl_sitemap(
     sitemap_url: str,
     max_urls: int = 500,
     max_concurrent: int = 10,
+    delay: float = 0,
+    output_dir: str | None = None,
     profile: str | None = None,
     cache_mode: str = "enabled",
     css_selector: str | None = None,
@@ -1196,6 +1292,14 @@ async def crawl_sitemap(
         max_concurrent: Maximum number of URLs to crawl simultaneously
             (default 10). Higher values are faster but use more memory.
 
+        delay: Politeness delay in seconds between requests (default 0 — no
+            delay). When > 0, a RateLimiter paces requests to avoid
+            overwhelming target servers.
+
+        output_dir: Directory to write per-page .md files and a manifest.json.
+            When set, returns a metadata summary (file paths) instead of page
+            content. When None (default), returns full content inline.
+
         profile: Named crawl profile for per-page configuration.
         cache_mode: Cache behavior (same as crawl_url).
         css_selector: Restrict extraction to matching elements on each page.
@@ -1222,8 +1326,8 @@ async def crawl_sitemap(
         logger.warning("Unknown cache_mode %r -- defaulting to 'enabled'", cache_mode)
 
     logger.info(
-        "crawl_sitemap: %s (max_urls=%d, max_concurrent=%d)",
-        sitemap_url, max_urls, max_concurrent,
+        "crawl_sitemap: %s (max_urls=%d, max_concurrent=%d, delay=%.1f)",
+        sitemap_url, max_urls, max_concurrent, delay,
     )
 
     # Fetch and parse sitemap XML via httpx (not the browser)
@@ -1270,8 +1374,10 @@ async def crawl_sitemap(
     app: AppContext = ctx.request_context.lifespan_context
     run_cfg = build_run_config(app.profile_manager, profile, **per_call_kwargs)
 
+    rate_limiter = RateLimiter(base_delay=(delay, delay)) if delay > 0 else None
     dispatcher = SemaphoreDispatcher(
         semaphore_count=max_concurrent,
+        rate_limiter=rate_limiter,
         # NO monitor -- CrawlerMonitor uses Rich Console -> stdout corruption
     )
 
@@ -1281,7 +1387,10 @@ async def crawl_sitemap(
         dispatcher=dispatcher,
     )
 
-    output = _format_multi_results(results)
+    if output_dir:
+        output = _persist_results(results, output_dir)
+    else:
+        output = _format_multi_results(results)
     if truncated:
         output = (
             f"Note: Sitemap contained {total_sitemap_urls} URLs; "

@@ -19,9 +19,9 @@ AI coding assistants can't browse the web natively. This MCP server gives them a
 | -------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `ping`               | Health check — confirms server and browser are running                                                               |
 | `crawl_url`          | Crawl a URL and return clean markdown. Supports JS rendering, custom headers/cookies, CSS scoping, and cache control |
-| `crawl_many`         | Crawl multiple URLs concurrently with configurable parallelism                                                       |
-| `deep_crawl`         | BFS site crawl — follows links with configurable depth and page limits                                               |
-| `crawl_sitemap`      | Crawl all URLs from an XML sitemap (supports gzip and sitemap indexes)                                               |
+| `crawl_many`         | Crawl multiple URLs concurrently with configurable parallelism, politeness delays, and optional disk persistence     |
+| `deep_crawl`         | BFS site crawl — follows links with configurable depth and page limits, politeness delays, and optional disk storage |
+| `crawl_sitemap`      | Crawl all URLs from an XML sitemap (supports gzip and sitemap indexes, politeness delays, optional disk persistence) |
 | `extract_structured` | LLM-powered structured JSON extraction with a user-defined schema                                                    |
 | `extract_css`        | CSS-selector-based structured extraction — deterministic, no LLM required                                            |
 | `create_session`     | Create a persistent browser session (preserves cookies and state)                                                    |
@@ -121,9 +121,34 @@ Replace `/path/to/crawl4ai-mcp` with the absolute path to your clone. The `--dir
 
 > "Deep crawl this docs site to depth 2 and find all pages mentioning authentication"
 
+> "Crawl this list of URLs with a 1-second delay between requests to be respectful"
+
+> "Batch crawl these URLs and save all results to /tmp/crawl_results as markdown files"
+
 ### Sessions
 
 > "Create a browser session, log into this site, then crawl the dashboard page"
+
+## Batch Crawling Options
+
+All batch tools (`crawl_many`, `deep_crawl`, `crawl_sitemap`) support two optional parameters:
+
+- **`delay`** (default: 0): Politeness delay in seconds between requests. Use this to respect target servers and avoid overwhelming them. For `deep_crawl`, this becomes `delay_before_return_html` in crawl4ai. For `crawl_many` and `crawl_sitemap`, this wires a RateLimiter into request dispatch.
+
+- **`output_dir`** (default: None): Directory to write per-page `.md` files and a `manifest.json` instead of returning content inline. Useful for large batch crawls. When set, the tool returns a metadata summary with file paths instead of full page content.
+
+Example:
+
+```bash
+# Crawl with politeness delay
+crawl_many(urls=[...], delay=1.5)
+
+# Crawl and save to disk
+crawl_sitemap(sitemap_url="...", output_dir="/tmp/results")
+
+# Both
+deep_crawl(url="...", delay=0.5, output_dir="/tmp/crawl")
+```
 
 ## Profiles
 
