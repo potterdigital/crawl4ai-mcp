@@ -1399,12 +1399,47 @@ async def crawl_sitemap(
     return output
 
 
+def _preflight_playwright() -> None:
+    """Verify the Playwright Chromium binary exists before opening stdio transport.
+
+    Catches the most common install-time failure: `uv sync` upgraded Playwright,
+    but the cached Chromium at ms-playwright/chromium-<N> is stale or missing.
+    A clean stderr message + non-zero exit is friendlier than a 60-line traceback
+    buried in the MCP client's connection log.
+    """
+    from pathlib import Path
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        sys.stderr.write(
+            f"ERROR: Playwright is not installed in this environment: {e}\n"
+            "Fix:  uv sync && uv run crawl4ai-setup\n"
+        )
+        sys.exit(1)
+
+    try:
+        with sync_playwright() as p:
+            exe = p.chromium.executable_path
+            if not exe or not Path(exe).exists():
+                raise FileNotFoundError(exe or "<unknown path>")
+    except Exception as e:
+        sys.stderr.write(
+            "ERROR: Playwright Chromium binary is missing or stale.\n"
+            "This commonly happens after `uv sync` upgrades Playwright to a new version.\n"
+            "Fix:  uv run crawl4ai-setup\n"
+            f"Details: {e}\n"
+        )
+        sys.exit(1)
+
+
 def main() -> None:
     """Entry point for `uv run python -m crawl4ai_mcp.server` and the crawl4ai-mcp script.
 
     Do NOT wrap mcp.run() in asyncio.run() — FastMCP manages the event loop
     internally via anyio. Wrapping causes a 'cannot run nested event loop' error.
     """
+    _preflight_playwright()
     mcp.run()  # stdio transport is the default
 
 

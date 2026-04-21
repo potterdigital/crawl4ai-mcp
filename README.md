@@ -196,8 +196,14 @@ Any output to stdout (from a `print()` call or `verbose=True` in crawl4ai config
 uv run python -m crawl4ai_mcp.server 2>&1 1>/dev/null
 ```
 
-**Chromium fails to start**
-Run `uv run crawl4ai-doctor` to diagnose. If Playwright browsers are missing, run `uv run crawl4ai-setup` again.
+**Chromium fails to start / "Playwright Chromium binary is missing or stale"**
+Most often happens after `uv sync` upgrades Playwright to a new version — the cached Chromium under `~/Library/Caches/ms-playwright/` (macOS) or `~/.cache/ms-playwright/` (Linux) goes stale. The server runs a preflight check at startup and exits with a clear message in your MCP client's log; the fix is:
+
+```bash
+uv run crawl4ai-setup
+```
+
+Run `uv run crawl4ai-doctor` for a deeper diagnostic.
 
 **`extract_structured` returns an error about missing API key**
 The LLM extraction tool requires a `provider` and corresponding API key (e.g., `OPENAI_API_KEY`). The `extract_css` tool is a free alternative that doesn't require an LLM.
