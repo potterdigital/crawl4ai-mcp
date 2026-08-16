@@ -31,6 +31,26 @@ AI coding assistants can't browse the web natively. This MCP server gives them a
 | `list_profiles`      | List available crawl profiles and their settings                                                                     |
 | `check_update`       | Check if a newer version of crawl4ai is available on PyPI                                                            |
 
+Every tool ships MCP [tool annotations](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)
+so your client can reason about it before calling:
+
+- **Read-only:** `ping`, `list_profiles`, `list_sessions`, `check_update`. These
+  inspect state and nothing else.
+- **Destructive:** `destroy_session` only. It is the one tool that tears something
+  down, discarding a session's page, cookies, and localStorage.
+- **Everything else is non-destructive but not read-only.** The crawl and extract
+  tools are deliberately *not* marked read-only, because each accepts a `js_code`
+  parameter that runs caller-supplied JavaScript in the live page. If your client
+  skips confirmation for read-only tools, you do not want that auto-approved
+  against an arbitrary URL. They only ever add: a cache entry, a session page, or
+  files under `output_dir`.
+
+Long-running tools (`crawl_many`, `crawl_sitemap`, `deep_crawl`, `repair_browser`)
+report progress while they work. Clients abort a tool call that goes silent for too
+long — Claude Code's default is 30 minutes on stdio — so a large crawl that emitted
+nothing until it finished could be killed mid-flight. `deep_crawl` reports each page
+as it completes; the others heartbeat every 15 seconds.
+
 ## Prerequisites
 
 - Python 3.12+

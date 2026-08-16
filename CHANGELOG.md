@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.0] - 2026-08-16
+
+### Fixed
+
+- **Long crawls are no longer aborted for idleness.** `crawl_many`, `crawl_sitemap`, and `deep_crawl` emitted nothing between the tool call and its response, so a crawl that ran longer than the client's idle window was killed outright and its work lost. Clients abort a tool call that sends neither a response nor a progress notification for that window; in Claude Code it is 30 minutes on stdio, and stdio stopped being exempt in 2.1.203. This was reproduced against a real client, not inferred: with the window shrunk for the test, a batch crawl died with `sent no response or progress for 30s; aborting`. It is reachable in normal use — 500 sitemap URLs at concurrency 10 against a site that hits the 60s page timeout is roughly 50 minutes. `deep_crawl` now streams and reports each completed page; `crawl_many` and `crawl_sitemap` heartbeat every 15 seconds. Per-page progress for those two would require swapping `SemaphoreDispatcher` for `MemoryAdaptiveDispatcher`, the only dispatcher crawl4ai ships that streams, which stalls dispatch above a system-memory threshold; that is not a failure mode worth adding to everyone's crawls for a nicer progress message.
+- **`repair_browser` no longer races the same abort.** Its install timeout is 1800 seconds, exactly the default stdio idle window, so a slow ~150MB Chromium download could lose to the client's abort. It now heartbeats while installing.
+
+### Added
+
+- **MCP tool annotations on all 13 tools**, plus display titles. Previously every tool declared none, so clients saw the spec defaults — destructive and open-world — for all of them, including `ping` and `list_profiles`. Notably, the crawl and extract tools are **not** marked read-only: each accepts `js_code`, which executes caller-supplied JavaScript in the live page, and a client that skips confirmation for read-only tools would be auto-approving arbitrary script execution against any URL, including inside an authenticated session created by `create_session`. They are marked non-destructive instead, which carries the useful signal. `destroy_session` is the only tool marked destructive.
+
+### Changed
+
+- **Migrated to MCP Python SDK 2.0.0**, which adds protocol revision `2026-07-28`. The pin moves from `>=1.26.0,<2.0.0` to `>=2.0.0,<3.0.0`: 1.x cannot import `mcp.server.mcpserver`, so this server no longer runs on it. `FastMCP` is now `MCPServer` (`mcp.server.fastmcp` → `mcp.server.mcpserver`), and `Context` dropped its session type parameter, so `Context[ServerSession, AppContext]` is now `Context[AppContext]`. Note that `2026-07-28` is not reachable through the `initialize` handshake — it belongs to the stateless per-request era reached via `server/discover`, and `2025-11-25` remains the newest handshake-negotiable revision. A client using the classic handshake therefore still negotiates `2025-11-25`, which is correct, and the server now additionally answers `server/discover`, `tools/list`, and `tools/call` on `2026-07-28`.
+- **Documented that `output_dir` overwrites.** The batch crawl tools write per-page `.md` files and a `manifest.json` into the directory you name, replacing any same-named files without warning. That behavior was always there and undocumented.
+
 ## [1.2.0] - 2026-08-16
 
 ### Changed

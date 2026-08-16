@@ -42,10 +42,9 @@ from crawl4ai.deep_crawling import (
     URLPatternFilter,
 )
 import httpx
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 from packaging.version import Version
-from mcp.server.session import ServerSession
 
 from crawl4ai_mcp.profiles import ProfileManager, build_run_config
 
@@ -217,7 +216,7 @@ async def _repair_browser(app_ctx: "AppContext") -> tuple[bool, str]:
 def _require_crawler(app: "AppContext") -> AsyncWebCrawler:
     """Return the live crawler, or raise an error that says how to fix it.
 
-    FastMCP surfaces the exception text to the calling agent, so this is what
+    MCPServer surfaces the exception text to the calling agent, so this is what
     turns a dead browser into something the caller can act on in one step
     instead of a cryptic AttributeError on None.
     """
@@ -269,7 +268,7 @@ class AppContext:
 
 
 @asynccontextmanager
-async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
     """Initialize AsyncWebCrawler once at server startup; close at shutdown.
 
     Uses explicit crawler.start() / crawler.close() rather than `async with
@@ -337,16 +336,19 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         logger.info("Shutdown complete")
 
 
-mcp = FastMCP("crawl4ai", lifespan=app_lifespan)
+mcp = MCPServer("crawl4ai", lifespan=app_lifespan)
 
 
 # --- Tool annotation policy -------------------------------------------------
 #
 # Every tool declares MCP ToolAnnotations so a client can reason about safety
 # before invoking it. The hints are spec-defined (see the ToolAnnotations type
-# in the MCP schema); the non-obvious calls made here are:
+# in the MCP schema). The SDK exposes them under snake_case names since 2.0;
+# the spec and the JSON on the wire still call them readOnlyHint,
+# destructiveHint, idempotentHint, and openWorldHint. The non-obvious calls
+# made here are:
 #
-# readOnlyHint=False on every crawl and extract tool. These look like pure
+# read_only_hint=False on every crawl and extract tool. These look like pure
 #   retrieval, and mostly are, but they accept a `js_code` parameter that runs
 #   caller-supplied JavaScript inside the live page. A client that skips
 #   confirmation for read-only tools would then be auto-approving arbitrary
@@ -354,12 +356,12 @@ mcp = FastMCP("crawl4ai", lifespan=app_lifespan)
 #   session created via create_session. The retrieval framing is not worth that
 #   hole, so these are not marked read-only.
 #
-# destructiveHint=False on those same tools. This is where the useful signal
+# destructive_hint=False on those same tools. This is where the useful signal
 #   lives: they only ever add (a cache entry, a session page, files under
 #   output_dir). Nothing the server owns is torn down. destroy_session is the
 #   single exception and the only tool marked destructive.
 #
-# openWorldHint=False on check_update. It does reach the network, but only two
+# open_world_hint=False on check_update. It does reach the network, but only two
 #   fixed endpoints (PyPI and the crawl4ai changelog on GitHub). The caller
 #   cannot steer the target, so its world is closed. The crawl tools take a
 #   caller-supplied URL and are open.
@@ -706,7 +708,7 @@ PROGRESS_HEARTBEAT_S = 15.0
 
 
 async def _emit_progress(
-    ctx: "Context[ServerSession, AppContext]",
+    ctx: "Context[AppContext]",
     progress: float,
     total: float | None = None,
     message: str | None = None,
@@ -725,7 +727,7 @@ async def _emit_progress(
 
 async def _collect_with_progress(
     stream,
-    ctx: "Context[ServerSession, AppContext]",
+    ctx: "Context[AppContext]",
     total: int | None,
     label: str,
 ) -> list:
@@ -759,7 +761,7 @@ async def _collect_with_progress(
 
 async def _await_with_heartbeat(
     coro,
-    ctx: "Context[ServerSession, AppContext]",
+    ctx: "Context[AppContext]",
     label: str,
     interval: float = PROGRESS_HEARTBEAT_S,
 ):
@@ -788,11 +790,11 @@ async def _await_with_heartbeat(
 @mcp.tool(
     title="Server health check",
     annotations=ToolAnnotations(
-        readOnlyHint=True,
-        openWorldHint=False,  # inspects in-process state only
+        read_only_hint=True,
+        open_world_hint=False,  # inspects in-process state only
     ),
 )
-async def ping(ctx: Context[ServerSession, AppContext]) -> str:
+async def ping(ctx: Context[AppContext]) -> str:
     """Verify the MCP server is running and the browser is ready.
 
     Returns 'ok' if the server is healthy. If the browser is missing or still
@@ -825,13 +827,13 @@ async def ping(ctx: Context[ServerSession, AppContext]) -> str:
 @mcp.tool(
     title="Install and recover the browser",
     annotations=ToolAnnotations(
-        readOnlyHint=False,  # writes ~150MB of Chromium to the Playwright cache
-        destructiveHint=False,  # additive install; never removes an existing build
-        idempotentHint=True,  # no-op when the browser is already healthy
-        openWorldHint=True,  # downloads from Playwright's CDN
+        read_only_hint=False,  # writes ~150MB of Chromium to the Playwright cache
+        destructive_hint=False,  # additive install; never removes an existing build
+        idempotent_hint=True,  # no-op when the browser is already healthy
+        open_world_hint=True,  # downloads from Playwright's CDN
     ),
 )
-async def repair_browser(ctx: Context[ServerSession, AppContext]) -> str:
+async def repair_browser(ctx: Context[AppContext]) -> str:
     """Install the Chromium build the crawler needs, then bring the browser up.
 
     Use when ping reports the browser is unavailable. This runs the same
@@ -868,11 +870,11 @@ async def repair_browser(ctx: Context[ServerSession, AppContext]) -> str:
 @mcp.tool(
     title="List crawl profiles",
     annotations=ToolAnnotations(
-        readOnlyHint=True,
-        openWorldHint=False,  # reads profiles loaded into memory at startup
+        read_only_hint=True,
+        open_world_hint=False,  # reads profiles loaded into memory at startup
     ),
 )
-async def list_profiles(ctx: Context[ServerSession, AppContext]) -> str:
+async def list_profiles(ctx: Context[AppContext]) -> str:
     """List all available crawl profiles and their configuration settings.
 
     Profiles provide named starting-point configurations for crawl_url.
@@ -910,11 +912,11 @@ async def list_profiles(ctx: Context[ServerSession, AppContext]) -> str:
 @mcp.tool(
     title="Check for a crawl4ai update",
     annotations=ToolAnnotations(
-        readOnlyHint=True,  # reports only; the upgrade itself is scripts/update.sh
-        openWorldHint=False,  # two fixed endpoints; the caller cannot steer them
+        read_only_hint=True,  # reports only; the upgrade itself is scripts/update.sh
+        open_world_hint=False,  # two fixed endpoints; the caller cannot steer them
     ),
 )
-async def check_update(ctx: Context[ServerSession, AppContext]) -> str:
+async def check_update(ctx: Context[AppContext]) -> str:
     """Check if a newer version of crawl4ai is available on PyPI.
 
     Compares the installed version against the latest release. Reports version
@@ -954,10 +956,10 @@ async def check_update(ctx: Context[ServerSession, AppContext]) -> str:
 @mcp.tool(
     title="Crawl a URL to markdown",
     annotations=ToolAnnotations(
-        readOnlyHint=False,  # js_code runs caller JS in-page; session_id persists state
-        destructiveHint=False,  # additive only: a cache entry and possibly a session
-        idempotentHint=False,  # js_code may have side effects on each call
-        openWorldHint=True,  # fetches a caller-supplied URL
+        read_only_hint=False,  # js_code runs caller JS in-page; session_id persists state
+        destructive_hint=False,  # additive only: a cache entry and possibly a session
+        idempotent_hint=False,  # js_code may have side effects on each call
+        open_world_hint=True,  # fetches a caller-supplied URL
     ),
 )
 async def crawl_url(
@@ -974,7 +976,7 @@ async def crawl_url(
     cookies: list | None = None,
     page_timeout: int = 60,
     word_count_threshold: int = 10,
-    ctx: Context[ServerSession, AppContext] = None,
+    ctx: Context[AppContext] = None,
 ) -> str:
     """Crawl a URL and return clean, filtered markdown content.
 
@@ -1102,10 +1104,10 @@ async def crawl_url(
 @mcp.tool(
     title="Create a browser session",
     annotations=ToolAnnotations(
-        readOnlyHint=False,  # allocates a persistent browser page and cookie jar
-        destructiveHint=False,  # additive; refuses rather than replacing an existing session
-        idempotentHint=False,  # session_id=None mints a fresh UUID on every call
-        openWorldHint=True,  # optionally navigates to a caller-supplied URL
+        read_only_hint=False,  # allocates a persistent browser page and cookie jar
+        destructive_hint=False,  # additive; refuses rather than replacing an existing session
+        idempotent_hint=False,  # session_id=None mints a fresh UUID on every call
+        open_world_hint=True,  # optionally navigates to a caller-supplied URL
     ),
 )
 async def create_session(
@@ -1113,7 +1115,7 @@ async def create_session(
     url: str | None = None,
     cookies: list | None = None,
     headers: dict | None = None,
-    ctx: Context[ServerSession, AppContext] = None,
+    ctx: Context[AppContext] = None,
 ) -> str:
     """Create a named browser session for multi-step authenticated workflows.
 
@@ -1188,12 +1190,12 @@ async def create_session(
 @mcp.tool(
     title="List browser sessions",
     annotations=ToolAnnotations(
-        readOnlyHint=True,
-        openWorldHint=False,  # reads the in-memory session table
+        read_only_hint=True,
+        open_world_hint=False,  # reads the in-memory session table
     ),
 )
 async def list_sessions(
-    ctx: Context[ServerSession, AppContext] = None,
+    ctx: Context[AppContext] = None,
 ) -> str:
     """List all active named browser sessions.
 
@@ -1218,17 +1220,17 @@ async def list_sessions(
 @mcp.tool(
     title="Destroy a browser session",
     annotations=ToolAnnotations(
-        readOnlyHint=False,
+        read_only_hint=False,
         # The only tool here that tears something down: it kills the browser
         # page and discards its cookies and localStorage. Not recoverable.
-        destructiveHint=True,
-        idempotentHint=True,  # a second call reports "not found" and changes nothing
-        openWorldHint=False,  # acts on server-side state only
+        destructive_hint=True,
+        idempotent_hint=True,  # a second call reports "not found" and changes nothing
+        open_world_hint=False,  # acts on server-side state only
     ),
 )
 async def destroy_session(
     session_id: str,
-    ctx: Context[ServerSession, AppContext] = None,
+    ctx: Context[AppContext] = None,
 ) -> str:
     """Destroy a named browser session and free its resources.
 
@@ -1255,10 +1257,10 @@ async def destroy_session(
 @mcp.tool(
     title="Crawl many URLs concurrently",
     annotations=ToolAnnotations(
-        readOnlyHint=False,  # js_code runs caller JS in-page; output_dir writes files
-        destructiveHint=False,  # additive: cache entries and new files under output_dir
-        idempotentHint=False,  # js_code may have side effects on each call
-        openWorldHint=True,  # fetches caller-supplied URLs
+        read_only_hint=False,  # js_code runs caller JS in-page; output_dir writes files
+        destructive_hint=False,  # additive: cache entries and new files under output_dir
+        idempotent_hint=False,  # js_code may have side effects on each call
+        open_world_hint=True,  # fetches caller-supplied URLs
     ),
 )
 async def crawl_many(
@@ -1275,7 +1277,7 @@ async def crawl_many(
     user_agent: str | None = None,
     page_timeout: int = 60,
     word_count_threshold: int = 10,
-    ctx: Context[ServerSession, AppContext] = None,
+    ctx: Context[AppContext] = None,
 ) -> str:
     """Crawl multiple URLs concurrently and return all results.
 
@@ -1408,10 +1410,10 @@ async def crawl_many(
 @mcp.tool(
     title="Extract structured JSON with an LLM (paid)",
     annotations=ToolAnnotations(
-        readOnlyHint=False,  # js_code runs caller JS in-page, and this call costs money
-        destructiveHint=False,  # nothing is torn down
-        idempotentHint=False,  # every call bills the provider again
-        openWorldHint=True,  # fetches a caller-supplied URL and calls an external LLM
+        read_only_hint=False,  # js_code runs caller JS in-page, and this call costs money
+        destructive_hint=False,  # nothing is torn down
+        idempotent_hint=False,  # every call bills the provider again
+        open_world_hint=True,  # fetches a caller-supplied URL and calls an external LLM
     ),
 )
 async def extract_structured(
@@ -1423,7 +1425,7 @@ async def extract_structured(
     wait_for: str | None = None,
     js_code: str | None = None,
     page_timeout: int = 60,
-    ctx: Context[ServerSession, AppContext] = None,
+    ctx: Context[AppContext] = None,
 ) -> str:
     """Extract structured JSON from a page using an LLM.
 
@@ -1510,10 +1512,10 @@ async def extract_structured(
 @mcp.tool(
     title="Extract structured JSON with CSS selectors (free)",
     annotations=ToolAnnotations(
-        readOnlyHint=False,  # js_code runs caller JS in-page
-        destructiveHint=False,  # nothing is torn down
-        idempotentHint=False,  # js_code may have side effects on each call
-        openWorldHint=True,  # fetches a caller-supplied URL
+        read_only_hint=False,  # js_code runs caller JS in-page
+        destructive_hint=False,  # nothing is torn down
+        idempotent_hint=False,  # js_code may have side effects on each call
+        open_world_hint=True,  # fetches a caller-supplied URL
     ),
 )
 async def extract_css(
@@ -1523,7 +1525,7 @@ async def extract_css(
     wait_for: str | None = None,
     js_code: str | None = None,
     page_timeout: int = 60,
-    ctx: Context[ServerSession, AppContext] = None,
+    ctx: Context[AppContext] = None,
 ) -> str:
     """Extract structured JSON from a page using CSS selectors (no LLM, no cost).
 
@@ -1609,10 +1611,10 @@ async def extract_css(
 @mcp.tool(
     title="Crawl a site by following links",
     annotations=ToolAnnotations(
-        readOnlyHint=False,  # js_code runs caller JS in-page; output_dir writes files
-        destructiveHint=False,  # additive: cache entries and new files under output_dir
-        idempotentHint=False,  # js_code may have side effects on each call
-        openWorldHint=True,  # follows links discovered at crawl time
+        read_only_hint=False,  # js_code runs caller JS in-page; output_dir writes files
+        destructive_hint=False,  # additive: cache entries and new files under output_dir
+        idempotent_hint=False,  # js_code may have side effects on each call
+        open_world_hint=True,  # follows links discovered at crawl time
     ),
 )
 async def deep_crawl(
@@ -1633,7 +1635,7 @@ async def deep_crawl(
     user_agent: str | None = None,
     page_timeout: int = 60,
     word_count_threshold: int = 10,
-    ctx: Context[ServerSession, AppContext] = None,
+    ctx: Context[AppContext] = None,
 ) -> str:
     """Crawl a site by following links from a start URL using BFS (breadth-first search).
 
@@ -1785,10 +1787,10 @@ async def deep_crawl(
 @mcp.tool(
     title="Crawl every URL in a sitemap",
     annotations=ToolAnnotations(
-        readOnlyHint=False,  # js_code runs caller JS in-page; output_dir writes files
-        destructiveHint=False,  # additive: cache entries and new files under output_dir
-        idempotentHint=False,  # js_code may have side effects on each call
-        openWorldHint=True,  # crawls whatever URLs the sitemap lists
+        read_only_hint=False,  # js_code runs caller JS in-page; output_dir writes files
+        destructive_hint=False,  # additive: cache entries and new files under output_dir
+        idempotent_hint=False,  # js_code may have side effects on each call
+        open_world_hint=True,  # crawls whatever URLs the sitemap lists
     ),
 )
 async def crawl_sitemap(
@@ -1806,7 +1808,7 @@ async def crawl_sitemap(
     user_agent: str | None = None,
     page_timeout: int = 60,
     word_count_threshold: int = 10,
-    ctx: Context[ServerSession, AppContext] = None,
+    ctx: Context[AppContext] = None,
 ) -> str:
     """Crawl all pages listed in an XML sitemap.
 
@@ -1975,7 +1977,7 @@ def _preflight_playwright() -> None:
 def main() -> None:
     """Entry point for `uv run python -m crawl4ai_mcp.server` and the crawl4ai-mcp script.
 
-    Do NOT wrap mcp.run() in asyncio.run() — FastMCP manages the event loop
+    Do NOT wrap mcp.run() in asyncio.run() — MCPServer manages the event loop
     internally via anyio. Wrapping causes a 'cannot run nested event loop' error.
     """
     _preflight_playwright()

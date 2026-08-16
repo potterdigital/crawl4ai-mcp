@@ -55,10 +55,10 @@ class TestEveryToolIsAnnotated:
         assert untitled == [], f"tools missing a title: {untitled}"
 
     def test_read_only_hint_is_always_explicit(self, tools) -> None:
-        """readOnlyHint=None is indistinguishable from 'not read-only' to a client,
+        """read_only_hint=None is indistinguishable from 'not read-only' to a client,
         but it means nobody decided. Force the decision."""
-        undecided = [t.name for t in tools if t.annotations.readOnlyHint is None]
-        assert undecided == [], f"tools with an undecided readOnlyHint: {undecided}"
+        undecided = [t.name for t in tools if t.annotations.read_only_hint is None]
+        assert undecided == [], f"tools with an undecided read_only_hint: {undecided}"
 
 
 class TestJsCodeIsNeverReadOnly:
@@ -72,10 +72,10 @@ class TestJsCodeIsNeverReadOnly:
         offenders = [
             t.name
             for t in tools
-            if "js_code" in _params(t.name) and t.annotations.readOnlyHint is True
+            if "js_code" in _params(t.name) and t.annotations.read_only_hint is True
         ]
         assert offenders == [], (
-            f"tools expose js_code but claim readOnlyHint=True: {offenders}"
+            f"tools expose js_code but claim read_only_hint=True: {offenders}"
         )
 
     def test_the_js_code_surface_is_what_we_think_it_is(self, tools) -> None:
@@ -100,18 +100,18 @@ class TestDestructiveIsRare:
         """Nothing else here tears anything down. A second destructive tool means
         either a mislabel or a real new capability that needs a deliberate call."""
         destructive = sorted(
-            t.name for t in tools if t.annotations.destructiveHint is True
+            t.name for t in tools if t.annotations.destructive_hint is True
         )
         assert destructive == ["destroy_session"]
 
     def test_read_only_tools_leave_the_conditional_hints_unset(self, tools) -> None:
-        """destructiveHint and idempotentHint are defined as meaningful only when
-        readOnlyHint is false. Setting them anyway is noise a client may act on."""
+        """destructive_hint and idempotent_hint are defined as meaningful only when
+        read_only_hint is false. Setting them anyway is noise a client may act on."""
         for t in tools:
             a = t.annotations
-            if a.readOnlyHint is True:
-                assert a.destructiveHint is None, f"{t.name} sets destructiveHint"
-                assert a.idempotentHint is None, f"{t.name} sets idempotentHint"
+            if a.read_only_hint is True:
+                assert a.destructive_hint is None, f"{t.name} sets destructive_hint"
+                assert a.idempotent_hint is None, f"{t.name} sets idempotent_hint"
 
 
 class TestOpenWorldMatchesReach:
@@ -122,7 +122,7 @@ class TestOpenWorldMatchesReach:
         offenders = [
             t.name
             for t in tools
-            if _params(t.name) & url_params and t.annotations.openWorldHint is not True
+            if _params(t.name) & url_params and t.annotations.open_world_hint is not True
         ]
         assert offenders == [], f"tools take a URL but are not open-world: {offenders}"
 
@@ -136,5 +136,5 @@ class TestOpenWorldMatchesReach:
             "check_update",
             "destroy_session",
         }
-        closed = {t.name for t in tools if t.annotations.openWorldHint is False}
+        closed = {t.name for t in tools if t.annotations.open_world_hint is False}
         assert closed == expected_closed
