@@ -272,13 +272,36 @@ class TestCustomPatternsDoNotCrash:
 
 class TestUnknownProviderRefused:
     """litellm routes an unrecognised provider to OpenAI rather than rejecting
-    it, so a typo billed a vendor the caller never named."""
+    it, so a typo billed a vendor the caller never named.
 
-    def test_refused_with_alternatives(self) -> None:
+    The pair of tests below matters more than either alone. Validating against
+    PROVIDER_ENV_VARS catches the typo but also rejects Mistral, Azure, Bedrock
+    and the ~120 other providers litellm supports whose key name this server
+    has no reason to know. The check therefore asks litellm, not us.
+    """
+
+    def test_typo_is_refused(self) -> None:
         err = _check_api_key("gemin/gemini-2.5-flash")
         assert err is not None
         assert "Unknown provider" in err
-        assert "gemini" in err
+        # Must say WHY refusing beats attempting, or it reads as pedantry.
+        assert "OpenAI" in err
+
+    @pytest.mark.parametrize(
+        "provider", ["mistral/mistral-large", "azure/gpt-4o", "bedrock/claude-3"]
+    )
+    def test_real_litellm_providers_are_not_blocked(self, provider: str) -> None:
+        """Guards the over-correction: a stricter check that rejected these
+        would still pass the typo test above."""
+        assert _check_api_key(provider) is None
+
+    def test_provider_list_comes_from_litellm(self) -> None:
+        """A hand-maintained copy would drift the moment litellm adds one."""
+        from crawl4ai_mcp.server import _known_provider_prefixes
+
+        known = _known_provider_prefixes()
+        assert len(known) > 50, "expected litellm's full provider list"
+        assert {"openai", "anthropic", "mistral"} <= known
 
 
 class TestSessionRegistrationOnFailure:

@@ -600,27 +600,63 @@ def _extraction_error(extracted_content: str | None) -> str | None:
     return " | ".join(m for m in messages if m) or "the provider reported an error"
 
 
+def _known_provider_prefixes() -> set[str]:
+    """Every provider litellm can actually route to, read from litellm itself.
+
+    crawl4ai dispatches through litellm, which supports well over a hundred
+    providers. PROVIDER_ENV_VARS names only the handful whose environment
+    variable this server can check, so it is the wrong list to validate
+    against: doing that would reject perfectly good providers like
+    `mistral/...` or `azure/...` purely because we do not know their key name.
+
+    Asking litellm keeps the list correct as litellm grows, in the same spirit
+    as reading valid config keys off CrawlerRunConfig's live signature rather
+    than maintaining a copy. If litellm cannot be introspected, this returns an
+    empty set and validation below falls open rather than blocking real work.
+    """
+    try:
+        import litellm
+
+        return {str(getattr(p, "value", p)).lower() for p in litellm.provider_list}
+    except Exception as exc:  # pragma: no cover - litellm layout change
+        logger.debug("Could not read litellm's provider list: %s", exc)
+        return set()
+
+
 def _check_api_key(provider: str) -> str | None:
     """Validate that the expected API key env var is set for the given provider.
 
     Returns a structured error string if the key is missing or the provider is
-    not one this server knows, or None if the call is safe to attempt.
+    one litellm cannot route, or None if the call is safe to attempt.
     """
     prefix = provider.split("/")[0].lower()
+
     if prefix not in PROVIDER_ENV_VARS:
-        # An unknown prefix used to be waved through on the assumption that
-        # litellm would reject it. It does not: litellm treats an unrecognised
-        # provider as an OpenAI-compatible model name and sends the request to
-        # OPENAI. So `provider="gemin/gemini-2.5-flash"` billed OpenAI for a
-        # model nobody asked for, and the caller saw an OpenAIException naming a
-        # vendor they had not mentioned. A typo must not choose a vendor.
-        return (
-            f"Unknown provider {provider!r}\n"
-            f"Known providers: {', '.join(sorted(PROVIDER_ENV_VARS))}\n"
-            f"Use the form '<provider>/<model>', e.g. 'gemini/gemini-2.5-flash'. "
-            f"Unrecognised names are refused rather than attempted, because "
-            f"litellm would otherwise route them to OpenAI and bill that account."
-        )
+        # A provider we have no env var for is fine, PROVIDED litellm knows it.
+        #
+        # What is NOT fine is a typo. An unrecognised prefix used to be waved
+        # through on the theory that litellm would reject it; it does not.
+        # litellm treats an unknown provider as an OpenAI-compatible model name
+        # and sends the request to OPENAI, so `gemin/gemini-2.5-flash` came
+        # back as an OpenAIException and, on a machine with OPENAI_API_KEY set,
+        # would have billed OpenAI for a model nobody named. A typo must never
+        # pick a vendor.
+        known = _known_provider_prefixes()
+        if known and prefix not in known:
+            return (
+                f"Unknown provider {provider!r}\n"
+                f"litellm has no provider called {prefix!r}, and an unrecognised "
+                f"name is NOT rejected downstream — it is treated as an "
+                f"OpenAI-compatible model and billed to OpenAI. Check the "
+                f"spelling.\n"
+                f"Providers with a key this server checks for you: "
+                f"{', '.join(sorted(PROVIDER_ENV_VARS))}.\n"
+                f"Any other litellm provider also works; set its key in the "
+                f"environment yourself."
+            )
+        # Known to litellm but not to us: we cannot name its env var, so let
+        # the call proceed and let the provider report a missing key.
+        return None
 
     env_var = PROVIDER_ENV_VARS[prefix]
     if env_var is None:

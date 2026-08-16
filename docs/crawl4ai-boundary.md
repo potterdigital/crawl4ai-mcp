@@ -45,7 +45,34 @@ reading the installed package, not the docs. Re-verify on a major upgrade.
 - **Injected cookies must be cleared after the call.** `add_cookies` writes into
   a context crawl4ai caches and reuses; closing the page does not close the
   context. Skip the cleanup only when `session_id` is set, where persistence is
-  the point.
+  the point. Clear by name **and domain and path** — clearing by name alone
+  reaches into every context and deletes a live session's identically-named
+  cookie, and `session`, `sid` and `auth_token` are exactly what callers reuse.
+
+- **A session is not an isolation boundary, and cannot be made into one here.**
+  Playwright stores cookies on the browser CONTEXT. `BrowserManager.get_page`
+  caches one context per config signature and hands each crawl a fresh *page*
+  inside it, then binds a `session_id` to whichever shared context it landed
+  in. The signature is a whitelist — proxy, locale, timezone, geolocation,
+  `override_navigator`, `simulate_user`, `magic`, browser version — and nothing
+  in it can be varied per session without changing how pages actually render.
+  So there is no supported way to give a session its own cookie jar in 0.9.2.
+
+  Consequences, measured against a local echo server: a cookie held by a
+  session is sent on other same-domain crawls that pass no cookies and no
+  session; two named sessions share one jar; and a concurrent call overlapping
+  a cookie-bearing call can see its cookie. Cookies do stay domain-scoped, so
+  this is same-domain exposure, not the cross-host leak fixed in 2.1.0.
+  Documented on `crawl_url`'s `cookies` parameter and on `create_session`
+  rather than worked around, because any workaround here would be a guess about
+  crawl4ai internals. Separate identities belong in separate processes.
+
+- **Cookies cannot be injected without a real page load.** The hook fires during
+  navigation, and crawl4ai rejects `about:blank` outright ("URL must start with
+  http://, https://, file:// or raw:"). `create_session` used to navigate there
+  to apply cookies, so the hook never ran and the cookies were dropped while the
+  tool reported success. If there is no URL to load, say the cookies were not
+  applied; do not pretend.
 - **`CrawlResult.success` means "we got a response", not "HTTP 200."** A real
   404 arrives with `success=True` and the error page as content. Always carry
   `status_code`.
@@ -115,6 +142,53 @@ listing `example.com` also allows `api.example.com`. Its `_extract_domain`
 regex captures the whole netloc, so a URL with an explicit port does not match
 a bare host. Code that needs to predict a filter's verdict should call the
 filter's own `apply()` rather than reimplement this, or the two will drift.
+
+## Compensating for upstream defects
+
+Two places where this wrapper deliberately does not pass a value straight
+through, because upstream mishandles it. Both were found by driving the real
+server against real sites while the unit suite was green.
+
+- **`deep_crawl` asks BFS for `max_pages + 1` and truncates its own results.**
+  `BFSDeepCrawlStrategy._arun_stream` increments its page counter and then
+  `break`s when it reaches `max_pages` — *before* the `yield`. The last page is
+  fetched, counted, and discarded. `deep_crawl` forces `stream=True` so it can
+  report progress (a silent tool call gets aborted for idleness), so every BFS
+  deep crawl returned one page fewer than asked and `max_pages=1` returned
+  nothing at all. Measured against crawl4ai's own strategy:
+
+  | | `max_pages=1` | `3` | `5` |
+  | --- | --- | --- | --- |
+  | `stream=False` | 1 | 3 | 5 |
+  | `stream=True` | 0 | 2 | 4 |
+
+  Asking for one extra *and* truncating locally lands on exactly `max_pages`
+  under both states, so this stays correct if upstream is ever fixed. Remove
+  both halves together, never just one. `best-first` is unaffected and is not
+  padded.
+
+- **Sitemap decompression is decided by the bytes, never the URL.** See
+  `_maybe_gunzip`. httpx transparently decodes `Content-Encoding: gzip`, so the
+  URL's `.gz` suffix says nothing about what actually arrived, and redirects
+  break the correspondence in both directions.
+
+## Defaults that are deliberately not crawl4ai's
+
+- **`cache_mode` defaults to `bypass`, not `enabled`.** crawl4ai's cache stores
+  the raw page and does not preserve `fit_markdown`, so a cache hit silently
+  discards every content control this server applies — and this server always
+  configures a content filter, so essentially every cache hit was wrong.
+  Measured on one docs page with a BM25 query: 1,848 characters fresh versus
+  21,767 from cache, the latter carrying `status_code=None`. Caching is still
+  reachable by name; it is simply not a safe default here.
+
+- **Optional crawl parameters default to `None`, not to their documented
+  values.** `cache_mode`, `page_timeout` and `word_count_threshold` are only
+  written into the run config when the caller actually passes them. A concrete
+  default is indistinguishable from silence at the call site, and writing it
+  unconditionally meant a profile's own values could never win — which quietly
+  broke the documented merge order `default ← profile ← per-call`. Any new
+  parameter that a profile may also set must follow this pattern.
 
 ## Known upstream behaviour we cannot fix here
 

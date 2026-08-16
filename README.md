@@ -118,6 +118,38 @@ tables are already filtered out. Nothing is truncated when the flags are on, and
 requested links and tables still come back inline when `output_dir` is set —
 only markdown goes to disk.
 
+### Caching is off by default
+
+crawl4ai's cache stores the raw page and does not preserve the filtered
+markdown, so reading from it discards the content controls these tools exist to
+apply. Measured on one docs page with a `query`: a fresh crawl returned 1,848
+characters of the relevant sections; the same crawl served from cache returned
+21,767 characters of the whole page, labelled `status_code: null`.
+
+So `cache_mode` defaults to `bypass` — every crawl fetches fresh and you always
+get filtered content and a real HTTP status. Pass `cache_mode="enabled"` if you
+want the speed and can live with unfiltered results on repeat crawls.
+
+### Sessions are not a security boundary
+
+Playwright stores cookies on the browser *context*, and crawl4ai keeps one
+shared context per browser configuration. crawl4ai 0.9.2 offers no per-call or
+per-session cookie storage, so:
+
+- Cookies passed **without** `session_id` are cleared when the call ends. A
+  crawl running concurrently can still see them.
+- Cookies passed **with** `session_id` are deliberately kept, and stay in the
+  shared jar for the life of the session (30-minute idle TTL). They are sent on
+  other crawls of the same domain, including crawls that pass no cookies and no
+  session at all.
+- Two named sessions share that jar, so a credential in one is sent on the
+  other's requests to that domain.
+
+Cookies stay scoped to their own domain, so this is same-domain exposure rather
+than one host's credential reaching another host. `destroy_session` clears them
+immediately. **If you need two identities against one site kept genuinely
+apart, run them in separate server processes, not separate sessions.**
+
 ### When a crawl fails
 
 Errors carry the diagnostics crawl4ai already collected, not just a status code.
@@ -154,9 +186,10 @@ extract_css(url="https://www.python.org/about/",
 ```
 
 Prefer CSS otherwise; it is shorter and more people can read it. With
-`selector_type="xpath"`, start relative field selectors with `./` or `.//` — a
-leading `//` searches the whole document again rather than inside the matched
-item.
+`selector_type="xpath"`, write relative field selectors as `./` or `.//`. A
+leading `//` does not escape to the whole document: crawl4ai evaluates field
+selectors context-sensitively and silently re-roots `//foo` to `.//foo`, so
+`//title` inside an item matches nothing rather than the page title.
 
 ### Crawling more than one host
 

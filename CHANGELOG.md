@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.4.0] - 2026-08-16
+
+Findings from a live conformance sweep: seven parallel suites drove the real
+stdio server against real websites, covering every tool and every parameter.
+The 281-test unit suite was green throughout, because it mocks `CrawlResult`
+and never executes a tool body. Every defect below was reproduced against a
+live server, most with a control run, before anything was changed.
+
+### Changed
+
+- **Crawl tools no longer read from crawl4ai's cache by default.** crawl4ai's cache stores the raw page and does not preserve the filtered markdown, so a cache hit silently discarded every content control this server exists to apply. Measured on one docs page with a BM25 `query`: the first crawl returned 1,848 characters of the relevant sections, and an identical second crawl served from cache returned 21,767 characters of the whole page — twelve times larger, with `status_code: null`, which this server documents as meaning no response was ever received. Under the old default of `enabled`, crawling any page a second time quietly returned different, wrongly-labelled content. `cache_mode` now defaults to `bypass`; `"enabled"` remains available by name and documents what it costs.
+- **Unrecognised `cache_mode`, `scope` and `strategy` values are refused rather than silently defaulted.** The previous behaviour logged a warning to stderr, which an MCP client never sees, so `cache_mode="bypas"` ran with caching on and the caller had no way to learn the setting they asked for was not the setting they got. Same treatment `selector_type` already had.
+
+### Fixed
+
+- **`crawl_sitemap` crashed on valid sitemaps.** Decompression keyed off `sitemap_url.endswith(".gz")`, which describes the request rather than the response. httpx transparently decodes `Content-Encoding: gzip`, so a server that sets that header on a `.gz` path hands the parser plain bytes at a `.gz` URL, and `gzip.decompress` raised `BadGzipFile: Not a gzipped file (b'<?')` with nothing catching it. The inverse failed too: a `.xml` URL redirecting to genuinely gzipped content was never decompressed, and the caller was told their sitemap was not valid XML. The bytes now decide, and a decompression that still fails falls through to the XML parser, whose error names something the caller actually mentioned.
+- **An unwritable `output_dir` discarded a completed crawl.** Every page had already been fetched when a directory permission answered with `Error executing tool crawl_many: [Errno 13] Permission denied`, losing all of it and breaking this server's own rule that tools never raise for an expected failure. The content now comes back inline with a note explaining why, which is exactly what the caller would have received had they not asked for `output_dir`.
+- **`deep_crawl` returned one page fewer than requested, and nothing at all at `max_pages=1`.** crawl4ai's `_arun_stream` counts a successful page and then `break`s *before* the `yield`, and `deep_crawl` forces `stream=True` so it can report progress. Measured against crawl4ai's own strategy: `stream=False` returns 1/3/5 for those limits, `stream=True` returns 0/2/4. Fixed by requesting one extra page and truncating our own results, which lands on exactly `max_pages` whether or not the upstream defect is ever repaired.
+- **An invalid `custom_patterns` regex crashed `extract_patterns`** with no `structuredContent` and no indication of which pattern was at fault. Patterns are now validated up front and the offender is named.
+- **`extract_structured` reported success on an empty extraction.** Its guard tested `if not extracted_content`, and `"[]"` is a truthy string, so a `css_selector` matching nothing returned the literal `[]` plus a token-usage footer — a billed call that found nothing and said nothing.
+- **A misspelled `provider` was billed to OpenAI.** Unknown providers were waved through on the theory that litellm would reject them; it does not, treating an unrecognised provider as an OpenAI-compatible model name and routing there. Provider names are now validated against litellm's own 126-entry provider list, so typos are refused while every real litellm provider (Mistral, Azure, Bedrock and the rest) keeps working.
+- **Profile values could never take effect.** `cache_mode` and `page_timeout` were written into the run config unconditionally from their Python defaults, and `word_count_threshold` was guarded on `!= 10`, so the server could not distinguish "the caller said 60" from "the caller said nothing". The `fast` profile declares a 15-second timeout and crawls still failed with `Timeout 60000ms exceeded`. All three now default to `None` and only reach the config when explicitly passed, so the documented merge order finally holds.
+- **`create_session(cookies=..., url=None)` silently discarded every cookie** while reporting success. It navigated `about:blank` to trigger the injection hook; crawl4ai rejects that URL outright and the failed result was never checked. It now says the cookies were not applied and points at the two ways to apply them.
+- **A failed crawl carrying a `session_id` left a session nothing could reach.** crawl4ai registers a session during page setup, before navigation, so the session existed holding its injected cookies while `list_sessions` could not show it and `destroy_session` could not destroy it — and `destroy_session` is the only thing that clears a session's cookies.
+- **Cookie cleanup cleared a cookie *name* across every browser context**, with no domain or path. `session`, `sid` and `auth_token` are exactly the names callers reuse, so one call's cleanup silently deleted a live session's identically-named cookie and de-authenticated a workflow midway through. Cleanup is now scoped to the cookie that was actually injected.
+
+### Documented
+
+- **Cookies are not confined to the call that supplied them.** Playwright stores cookies on the browser *context*, and crawl4ai keeps one shared context per browser configuration with no per-call or per-session cookie storage available in 0.9.2. A cookie passed with `session_id` therefore stays in the shared jar for the life of the session and is sent on other crawls of the same domain, including crawls passing no cookies and no session at all; two named sessions share that jar too. It remains domain-scoped, so it is not one host's credential reaching another host, and `destroy_session` ends it immediately. Now stated plainly on `crawl_url`'s `cookies` parameter and on `create_session`, which also says outright that a session is not a security boundary.
+- **`query` was undocumented on all four crawl tools** despite being fully wired and changing the filter algorithm from density-based pruning to BM25.
+- **`user_agent`'s first-call-wins behaviour** was documented on `crawl_url` only; the other three tools promised nothing while behaving identically.
+- **A leading `//` in an XPath field selector does not escape to the whole document.** The claim added in 2.3.0 was wrong: crawl4ai evaluates field selectors context-sensitively and silently re-roots `//foo` to `.//foo`. Proven with `//title`, which returns empty rather than repeating the page title. Following the old advice worked, but anyone debugging an empty result was sent after a cause that does not exist.
+- **`pattern` is required for a `regex` field type**, and `group` defaults to 1 rather than 0. Neither was documented, and without `pattern` the field silently returns the element's raw HTML.
+- **Headers persist across calls inside a session**, because a session reuses one page and `set_extra_http_headers` is page-scoped. The docstring previously promised the opposite without qualification.
+
 ## [2.3.0] - 2026-08-16
 
 Four capabilities crawl4ai already ships that this server collected and threw
