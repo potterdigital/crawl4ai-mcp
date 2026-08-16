@@ -11,6 +11,7 @@ import sys
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from urllib.parse import urljoin
 
 # MUST be first: configure all logging to stderr before any library imports emit output.
 # Any output to stdout corrupts the MCP stdio JSON-RPC transport.
@@ -638,18 +639,49 @@ def _persist_results(
     )
 
 
-SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+# Zero-width and BOM characters seen inside real <loc> elements. They survive
+# .strip() and produce a URL that looks right and does not resolve.
+_INVISIBLE_CHARS = "​‌‍﻿⁠"
+
+# Bounds sitemap-index recursion. A sitemap index that references itself, or two
+# that reference each other, would otherwise recurse until the process dies.
+MAX_SITEMAP_DEPTH = 5
 
 
-async def _fetch_sitemap_urls(sitemap_url: str) -> list[str]:
+def _clean_loc(text: str | None, base_url: str) -> str | None:
+    """Normalize one <loc> value, or None if there is nothing usable in it.
+
+    Strips invisible characters and resolves relative paths against the sitemap
+    that contained them. The sitemap protocol requires absolute URLs, but
+    relative ones appear in the wild and are unusable if passed through as-is.
+    """
+    if not text:
+        return None
+    cleaned = text.strip().strip(_INVISIBLE_CHARS).strip()
+    if not cleaned:
+        return None
+    return urljoin(base_url, cleaned)
+
+
+async def _fetch_sitemap_urls(
+    sitemap_url: str, _depth: int = 0, _seen: set[str] | None = None
+) -> list[str]:
     """Fetch and parse a sitemap XML, returning all <loc> URLs.
 
     Handles:
     - Regular sitemaps (<urlset> with <url><loc>)
-    - Sitemap indexes (<sitemapindex> with <sitemap><loc>) -- recursively resolved
+    - Sitemap indexes (<sitemapindex> with <sitemap><loc>) -- resolved concurrently
     - Gzipped sitemaps (.xml.gz) -- automatically decompressed
-    - Sitemaps with or without XML namespace prefix
+    - Any sitemap XML namespace, or none
+
+    Namespaces are matched with ElementTree's `{*}` wildcard rather than the
+    sitemaps.org 0.9 URI. Pinning that URI meant a sitemap declaring any other
+    namespace -- the older google.com/schemas/sitemap/0.84 among them -- parsed
+    to zero URLs and was reported to the caller as an empty sitemap.
     """
+    seen = _seen if _seen is not None else set()
+    seen.add(sitemap_url)
+
     async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
         resp = await client.get(sitemap_url)
         resp.raise_for_status()
@@ -659,22 +691,54 @@ async def _fetch_sitemap_urls(sitemap_url: str) -> list[str]:
         content = gzip.decompress(content)
 
     root = ET.fromstring(content)
+    # Resolve relative <loc> against the final URL after redirects, not the one
+    # requested, so a sitemap that redirected resolves against where it landed.
+    base_url = str(resp.url) if getattr(resp, "url", None) else sitemap_url
 
-    # Check if this is a sitemap index
-    sub_sitemaps = root.findall("sm:sitemap/sm:loc", SITEMAP_NS)
-    if sub_sitemaps:
+    # A sitemap index: <sitemapindex><sitemap><loc>
+    sub_locs = [
+        loc
+        for elem in root.findall("{*}sitemap")
+        for loc in elem.findall("{*}loc")
+    ]
+    if sub_locs:
+        if _depth >= MAX_SITEMAP_DEPTH:
+            logger.warning(
+                "Sitemap index nesting exceeded %d levels at %s -- not descending further",
+                MAX_SITEMAP_DEPTH,
+                sitemap_url,
+            )
+            return []
+
+        targets = []
+        for loc in sub_locs:
+            child = _clean_loc(loc.text, base_url)
+            if child and child not in seen:
+                seen.add(child)
+                targets.append(child)
+
+        # Concurrent rather than sequential: a large index can reference
+        # hundreds of sub-sitemaps, and fetching them one at a time dominates
+        # the runtime of the whole crawl.
+        results = await asyncio.gather(
+            *(_fetch_sitemap_urls(t, _depth + 1, seen) for t in targets),
+            return_exceptions=True,
+        )
         urls: list[str] = []
-        for loc_elem in sub_sitemaps:
-            sub_urls = await _fetch_sitemap_urls(loc_elem.text.strip())
-            urls.extend(sub_urls)
+        for target, result in zip(targets, results):
+            if isinstance(result, BaseException):
+                # One bad sub-sitemap must not discard the others.
+                logger.warning("Sub-sitemap %s failed: %s", target, result)
+                continue
+            urls.extend(result)
         return urls
 
-    # Regular sitemap -- extract <url><loc> entries
-    # Try with namespace first, then without (some sitemaps omit namespace)
-    locs = root.findall("sm:url/sm:loc", SITEMAP_NS)
-    if not locs:
-        locs = root.findall("url/loc")
-    return [loc.text.strip() for loc in locs if loc.text]
+    # A regular sitemap: <urlset><url><loc>
+    locs = [
+        loc for elem in root.findall("{*}url") for loc in elem.findall("{*}loc")
+    ]
+    cleaned = (_clean_loc(loc.text, base_url) for loc in locs)
+    return [u for u in cleaned if u]
 
 
 async def _get_latest_pypi_version() -> tuple[str, dict]:
