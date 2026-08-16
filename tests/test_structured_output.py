@@ -313,3 +313,69 @@ class TestBatchResultRoundTrips:
         assert dumped["crawled"] == 1
         assert dumped["pages"][0]["markdown"] == "# hi"
         assert CrawlBatchResult.model_validate(dumped) == batch
+
+
+class TestQueryFilteredCrawling:
+    """A `query` swaps PruningContentFilter for BM25ContentFilter, so the page
+    is filtered to what was asked for BEFORE the tokens are spent, rather than
+    the whole page landing in context to be read past."""
+
+    def test_a_query_selects_the_bm25_filter(self) -> None:
+        from crawl4ai.content_filter_strategy import BM25ContentFilter
+
+        from crawl4ai_mcp.profiles import ProfileManager, build_run_config
+
+        cfg = build_run_config(ProfileManager(), None, query="installation steps")
+        cf = cfg.markdown_generator.content_filter
+        assert isinstance(cf, BM25ContentFilter)
+        assert cf.user_query == "installation steps"
+
+    def test_no_query_keeps_the_pruning_filter(self) -> None:
+        """The default path must be unchanged; preserve_tags lives there."""
+        from crawl4ai.content_filter_strategy import PruningContentFilter
+
+        from crawl4ai_mcp.profiles import ProfileManager, build_run_config
+
+        cf = build_run_config(ProfileManager(), None).markdown_generator.content_filter
+        assert isinstance(cf, PruningContentFilter)
+
+    def test_query_is_not_passed_through_as_a_config_kwarg(self) -> None:
+        """`query` is ours, not crawl4ai's. Leaking it would be stripped with a
+        warning at best and a TypeError at worst."""
+        from crawl4ai_mcp.profiles import ProfileManager, build_run_config
+
+        cfg = build_run_config(ProfileManager(), None, query="x")
+        assert not hasattr(cfg, "query")
+
+
+class TestPageMetadata:
+    """crawl4ai always scrapes title and description; they used to be dropped."""
+
+    def test_title_and_description_are_carried(self) -> None:
+        r = MagicMock()
+        r.url = "https://example.com/"
+        r.success = True
+        r.status_code = 200
+        r.error_message = ""
+        r.metadata = {"title": "Example Domain", "description": "An example page"}
+        r.markdown.fit_markdown = "body"
+        r.markdown.raw_markdown = "body"
+
+        page = srv._batch_result([r]).pages[0]
+
+        assert page.title == "Example Domain"
+        assert page.description == "An example page"
+
+    def test_missing_metadata_is_not_an_error(self) -> None:
+        r = MagicMock()
+        r.url = "https://example.com/"
+        r.success = True
+        r.status_code = 200
+        r.error_message = ""
+        r.metadata = {}
+        r.markdown.fit_markdown = "body"
+        r.markdown.raw_markdown = "body"
+
+        page = srv._batch_result([r]).pages[0]
+
+        assert page.title is None and page.description is None

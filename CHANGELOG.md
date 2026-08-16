@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.2.0] - 2026-08-16
+
+### Added
+
+- **`query` on every crawl tool — filter a page to what you asked for, before spending tokens.** Passing `query="how do I clear the cache"` swaps the density-based pruning filter for crawl4ai's `BM25ContentFilter`, which scores each block against the query. Measured on a real docs page: 9,278 chars became 2,165, about 23% of the page, and the retained text was the caching and pruning sections. Previously the only way to answer "what does this page say about X" was to pull the whole page into context and read past the rest. No LLM, no API key, no cost.
+- **`extract_patterns` — regex extraction with no LLM and no schema.** Pulls well-known shapes off a page: email, phone_intl, phone_us, url, ipv4, ipv6, uuid, currency, percentage, number, date_iso, date_us, time_24h, postal_us, postal_uk, html_color_hex, twitter_handle, hashtag, mac_addr, iban, credit_card. Also takes `custom_patterns` as `{"name": "regex"}`. Defaults to email, phone_us and url rather than everything, since asking for all 21 returns mostly noise. Free and deterministic, so it is the right first reach for "get me the contact details on this page" — `extract_css` remains for page-specific fields, `extract_structured` for data needing real understanding. Note this passes `input_format="html"` rather than crawl4ai's `fit_html` default: `fit_html` is the content-filtered HTML and this tool sets no filter, so the default returned 3 matches where html returns 83 on the same page.
+- **`title` and `description` on every crawled page.** crawl4ai always scrapes them; they were being discarded. Now on every `PageResult`, so an agent can identify a page without parsing its markdown.
+- **Best-first crawling for `deep_crawl`.** `strategy="best-first"` with `relevance_keywords=[...]` scores the frontier and spends the `max_pages` budget on the pages most likely to matter, instead of whatever happens to be shallow. Demonstrated on the same 5-page budget with keywords about caching: breadth-first returned three `projects/` pages, best-first returned the `cache/` page. `strategy="bfs"` remains the default and is unchanged.
+- **`apply_chunking` and `chunk_token_threshold` on `extract_structured`.** crawl4ai chunks at 2,048 tokens by default and makes a separate LLM call per chunk, concatenating the results, so any page over roughly 1,500 words silently returned several schema-shaped objects instead of the single one the schema implies, and billed for each. The behaviour was invisible; now it is controllable.
+
 ## [2.1.0] - 2026-08-16
 
 ### Security

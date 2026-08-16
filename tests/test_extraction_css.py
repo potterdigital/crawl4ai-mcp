@@ -63,3 +63,56 @@ class TestExtr03Enforcement:
         assert crawl_url is not extract_css
         assert extract_structured is not extract_css
         assert crawl_url is not extract_structured
+
+
+class TestExtractPatternsInputFormat:
+    """extract_patterns must not use crawl4ai's default input_format.
+
+    fit_html is the content-FILTERED html, and this tool builds a bare config
+    with no content filter, so fit_html is nearly empty. Measured on a real
+    page (python.org/about/help): fit_html found 3 emails and 0 urls, html
+    found 6 emails and 77 urls. The default silently under-reports instead of
+    failing, which is the worst shape for an extraction tool.
+    """
+
+    def test_builds_the_strategy_with_html_not_fit_html(self) -> None:
+        import inspect
+
+        from crawl4ai_mcp.server import extract_patterns
+
+        src = inspect.getsource(extract_patterns)
+        assert 'input_format="html"' in src, (
+            "extract_patterns must pass input_format explicitly; crawl4ai's "
+            "fit_html default returns almost nothing here"
+        )
+
+    def test_rejects_unknown_pattern_names_with_the_valid_list(self) -> None:
+        """A typo'd pattern name should say what the options are, not return
+        an empty result that looks like 'this page has no emails'."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from crawl4ai_mcp.server import extract_patterns
+
+        ctx = MagicMock()
+        ctx.request_context.lifespan_context = MagicMock()
+        out = asyncio.run(
+            extract_patterns(url="https://example.com", patterns=["nope"], ctx=ctx)
+        )
+        assert out.count == 0
+        assert "Unknown pattern name" in out.error
+        assert "email" in out.error
+
+    def test_requesting_nothing_is_an_explicit_error(self) -> None:
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from crawl4ai_mcp.server import extract_patterns
+
+        ctx = MagicMock()
+        ctx.request_context.lifespan_context = MagicMock()
+        out = asyncio.run(
+            extract_patterns(url="https://example.com", patterns=[], ctx=ctx)
+        )
+        assert out.count == 0
+        assert "No patterns requested" in out.error

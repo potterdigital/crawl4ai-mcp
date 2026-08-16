@@ -37,13 +37,16 @@ from crawl4ai import (
     JsonCssExtractionStrategy,
     LLMConfig,
     LLMExtractionStrategy,
+    RegexExtractionStrategy,
 )
 from crawl4ai.async_dispatcher import RateLimiter, SemaphoreDispatcher
 from crawl4ai.deep_crawling import (
+    BestFirstCrawlingStrategy,
     BFSDeepCrawlStrategy,
     FilterChain,
     URLPatternFilter,
 )
+from crawl4ai.deep_crawling.scorers import KeywordRelevanceScorer
 import httpx
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
@@ -478,6 +481,10 @@ class PageResult(BaseModel):
     """
     status_code: int | None = None
     """HTTP status. None when the request never got a response at all."""
+    title: str | None = None
+    """The page's <title>. crawl4ai always scrapes this; it used to be discarded."""
+    description: str | None = None
+    """The page's meta description, when it has one."""
     markdown: str | None = None
     """Page content. None on failure, and None when output_dir wrote it to disk."""
     error: str | None = None
@@ -546,6 +553,8 @@ def _page_results(results: list, include_content: bool = True) -> list[PageResul
                     url=result.url,
                     success=True,
                     status_code=result.status_code,
+                    title=meta.get("title"),
+                    description=meta.get("description"),
                     markdown=content if include_content else None,
                     depth=meta.get("depth"),
                     parent_url=meta.get("parent_url"),
@@ -557,6 +566,7 @@ def _page_results(results: list, include_content: bool = True) -> list[PageResul
                     url=result.url,
                     success=False,
                     status_code=result.status_code,
+                    title=meta.get("title"),
                     error=result.error_message,
                     depth=meta.get("depth"),
                     parent_url=meta.get("parent_url"),
@@ -1241,6 +1251,7 @@ async def crawl_url(
     url: str,
     profile: str | None = None,
     session_id: str | None = None,
+    query: str | None = None,
     cache_mode: str = "enabled",
     css_selector: str | None = None,
     excluded_selector: str | None = None,
@@ -1356,6 +1367,8 @@ async def crawl_url(
         per_call_kwargs["session_id"] = session_id
     if word_count_threshold != 10:
         per_call_kwargs["word_count_threshold"] = word_count_threshold
+    if query is not None:
+        per_call_kwargs["query"] = query
 
     app: AppContext = ctx.request_context.lifespan_context
     run_cfg = build_run_config(app.profile_manager, profile, **per_call_kwargs)
@@ -1544,6 +1557,7 @@ async def crawl_many(
     delay: float = 0,
     output_dir: str | None = None,
     profile: str | None = None,
+    query: str | None = None,
     cache_mode: str = "enabled",
     css_selector: str | None = None,
     excluded_selector: str | None = None,
@@ -1651,6 +1665,8 @@ async def crawl_many(
         per_call_kwargs["user_agent"] = user_agent
     if word_count_threshold != 10:
         per_call_kwargs["word_count_threshold"] = word_count_threshold
+    if query is not None:
+        per_call_kwargs["query"] = query
 
     app: AppContext = ctx.request_context.lifespan_context
     run_cfg = build_run_config(app.profile_manager, profile, **per_call_kwargs)
@@ -1696,6 +1712,8 @@ async def extract_structured(
     schema: dict,
     instruction: str,
     provider: str = "openai/gpt-4o-mini",
+    apply_chunking: bool = True,
+    chunk_token_threshold: int | None = None,
     css_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
@@ -1715,6 +1733,16 @@ async def extract_structured(
             {"type": "object", "properties": {...}} format.
         instruction: Natural language instruction for the LLM describing
             what to extract from the page content.
+        apply_chunking: Whether to split a long page into chunks (default True,
+            matching crawl4ai). Each chunk is a separate LLM call and the
+            results are concatenated, so a page over roughly 1500 words returns
+            several schema-shaped objects instead of one, and costs more. Pass
+            False for a single coherent result on a long page.
+
+        chunk_token_threshold: Chunk size in tokens when chunking is on
+            (crawl4ai's default is 2048). Raise it to keep more of the page in
+            one call.
+
         provider: LLM provider and model in litellm format (default:
             "openai/gpt-4o-mini"). Examples: "anthropic/claude-sonnet-4-5",
             "gemini/gemini-2.5-flash". Model names go stale: providers retire
@@ -1739,14 +1767,25 @@ async def extract_structured(
     logger.info("extract_structured: %s (provider=%s)", url, provider)
 
     llm_config = LLMConfig(provider=provider)
-    strategy = LLMExtractionStrategy(
-        llm_config=llm_config,
-        schema=schema,
-        extraction_type="schema",
-        instruction=instruction,
-        input_format="fit_markdown",
-        verbose=False,  # CRITICAL: protect MCP transport
-    )
+    # Chunking is on by default in crawl4ai at 2048 tokens, and each chunk is a
+    # SEPARATE LLM call whose results are concatenated. For a schema describing
+    # one object, any page over roughly 1500 words therefore returns several
+    # schema-shaped blobs rather than the single object the schema implies, and
+    # bills for every chunk. Exposed here so a caller can turn it off for a
+    # coherent single result, or raise the threshold, instead of being
+    # surprised by it.
+    strategy_kwargs: dict = {
+        "llm_config": llm_config,
+        "schema": schema,
+        "extraction_type": "schema",
+        "instruction": instruction,
+        "input_format": "fit_markdown",
+        "verbose": False,  # CRITICAL: protect MCP transport
+        "apply_chunking": apply_chunking,
+    }
+    if chunk_token_threshold is not None:
+        strategy_kwargs["chunk_token_threshold"] = chunk_token_threshold
+    strategy = LLMExtractionStrategy(**strategy_kwargs)
 
     # Build CrawlerRunConfig directly (not via build_run_config) —
     # extraction tools don't need markdown_generator or profile merging.
@@ -1934,6 +1973,141 @@ async def extract_css(
 
 
 @mcp.tool(
+    title="Extract emails, phones, prices and more (free)",
+    annotations=ToolAnnotations(
+        read_only_hint=False,  # js_code runs caller JS in-page
+        destructive_hint=False,  # nothing is torn down
+        idempotent_hint=False,  # js_code may have side effects on each call
+        open_world_hint=True,  # fetches a caller-supplied URL
+    ),
+)
+async def extract_patterns(
+    url: str,
+    patterns: list[str] | None = None,
+    custom_patterns: dict | None = None,
+    css_selector: str | None = None,
+    wait_for: str | None = None,
+    js_code: str | None = None,
+    page_timeout: int = 60,
+    ctx: Context[AppContext] = None,
+) -> ExtractionResult:
+    """Pull common data types off a page with regex. No LLM, no cost, no schema.
+
+    Use this instead of extract_structured when you want well-known shapes --
+    emails, phone numbers, prices, dates, URLs -- rather than page-specific
+    fields. It needs no schema authoring and costs nothing, so it is the right
+    first reach for "get me all the contact details on this page".
+
+    Use extract_css when you need page-specific fields tied to markup, and
+    extract_structured when the data needs actual understanding.
+
+    Args:
+        url: The URL to extract from.
+
+        patterns: Which built-in patterns to look for. Any of:
+            email, phone_intl, phone_us, url, ipv4, ipv6, uuid, currency,
+            percentage, number, date_iso, date_us, time_24h, postal_us,
+            postal_uk, html_color_hex, twitter_handle, hashtag, mac_addr,
+            iban, credit_card.
+            Defaults to ["email", "phone_us", "url"] -- passing every pattern
+            at once returns a lot of noise, so ask for what you want.
+
+        custom_patterns: Your own named regexes, as {"name": "pattern"}. Merged
+            with any built-ins requested. Example: {"sku": "SKU-[0-9]{6}"}.
+
+        css_selector: Restrict extraction to elements matching this selector.
+        wait_for: Wait condition before extracting (CSS: "css:#el", JS: "js:() => expr").
+        js_code: JavaScript to run after load, before extraction.
+        page_timeout: Page load timeout in seconds (default 60).
+    """
+    selected = patterns if patterns is not None else ["email", "phone_us", "url"]
+
+    flag = RegexExtractionStrategy._B.NOTHING
+    unknown: list[str] = []
+    for name in selected:
+        member = getattr(RegexExtractionStrategy._B, name.upper(), None)
+        if member is None:
+            unknown.append(name)
+            continue
+        flag |= member
+    if unknown:
+        return ExtractionResult(
+            url=url,
+            count=0,
+            items=[],
+            error=(
+                f"Unknown pattern name(s): {', '.join(unknown)}. Valid names are: "
+                + ", ".join(
+                    m.name.lower()
+                    for m in RegexExtractionStrategy._B
+                    if m.name not in {"NOTHING", "ALL"}
+                )
+            ),
+        )
+    if flag == RegexExtractionStrategy._B.NOTHING and not custom_patterns:
+        return ExtractionResult(
+            url=url,
+            count=0,
+            items=[],
+            error="No patterns requested. Pass `patterns`, `custom_patterns`, or both.",
+        )
+
+    logger.info("extract_patterns: %s (patterns=%s)", url, selected)
+
+    # input_format="html", not crawl4ai's default of "fit_html". fit_html is the
+    # content-filtered HTML, and this tool builds a bare config with no filter,
+    # so it is nearly empty: measured on python.org/about/help, fit_html yielded
+    # 3 emails and ZERO urls while html yielded 6 emails and 77 urls. The
+    # default would silently under-report rather than fail.
+    strategy = RegexExtractionStrategy(
+        flag, custom=custom_patterns or None, input_format="html"
+    )
+    run_cfg = CrawlerRunConfig(
+        extraction_strategy=strategy,
+        page_timeout=page_timeout * 1000,
+        verbose=False,  # CRITICAL: protect MCP transport
+    )
+    if css_selector is not None:
+        run_cfg.css_selector = css_selector
+    if wait_for is not None:
+        run_cfg.wait_for = wait_for
+    if js_code is not None:
+        run_cfg.js_code = js_code
+
+    app: AppContext = ctx.request_context.lifespan_context
+    result = await _crawl_with_overrides(_require_crawler(app), url, run_cfg)
+
+    if not result.success:
+        return ExtractionResult(
+            url=url, count=0, items=[], error=_format_crawl_error(url, result)
+        )
+
+    if not result.extracted_content or result.extracted_content == "[]":
+        return ExtractionResult(
+            url=url,
+            count=0,
+            items=[],
+            error=(
+                "No matches on this page for the requested patterns. The page may "
+                "genuinely contain none, or the data may be rendered by JavaScript "
+                "that had not run yet -- try wait_for or the js_heavy profile."
+            ),
+        )
+
+    try:
+        items = json.loads(result.extracted_content)
+    except json.JSONDecodeError as exc:
+        return ExtractionResult(
+            url=url, count=0, items=[], error=f"Extraction returned malformed JSON: {exc}"
+        )
+
+    if isinstance(items, dict):
+        items = [items]
+    items = [i for i in items if isinstance(i, dict)]
+    return ExtractionResult(url=url, count=len(items), items=items)
+
+
+@mcp.tool(
     title="Crawl a site by following links",
     annotations=ToolAnnotations(
         read_only_hint=False,  # js_code runs caller JS in-page; output_dir writes files
@@ -1947,12 +2121,15 @@ async def deep_crawl(
     max_depth: int = 3,
     max_pages: int = 100,
     scope: str = "same-domain",
+    strategy: str = "bfs",
+    relevance_keywords: list[str] | None = None,
     include_pattern: str | None = None,
     exclude_pattern: str | None = None,
     max_concurrent: int = 5,
     delay: float = 0,
     output_dir: str | None = None,
     profile: str | None = None,
+    query: str | None = None,
     cache_mode: str = "enabled",
     css_selector: str | None = None,
     excluded_selector: str | None = None,
@@ -2072,19 +2249,46 @@ async def deep_crawl(
         logger.warning("Unknown scope %r — defaulting to 'same-domain'", scope)
         include_external = False
 
-    # MUST be fresh per call — BFSDeepCrawlStrategy has mutable state
-    strategy = BFSDeepCrawlStrategy(
-        max_depth=max_depth,
-        max_pages=max_pages,
-        include_external=include_external,
-        filter_chain=filter_chain,
-    )
+    # MUST be fresh per call — the strategies carry mutable traversal state.
+    #
+    # best-first exists because max_pages truncates. Breadth-first spends the
+    # budget on whatever happens to be shallow, so on a large site the cap is
+    # reached before the pages the caller actually wanted. Scoring the frontier
+    # by keyword relevance spends the same budget on the pages most likely to
+    # matter, which is usually what an agent means by "crawl the docs for X".
+    if strategy == "best-first":
+        scorer = (
+            KeywordRelevanceScorer(keywords=relevance_keywords)
+            if relevance_keywords
+            else None
+        )
+        if scorer is None:
+            logger.warning(
+                "strategy='best-first' without relevance_keywords has nothing to "
+                "rank by and degrades to an unordered crawl; pass keywords or use bfs"
+            )
+        crawl_strategy = BestFirstCrawlingStrategy(
+            max_depth=max_depth,
+            max_pages=max_pages,
+            include_external=include_external,
+            filter_chain=filter_chain,
+            url_scorer=scorer,
+        )
+    else:
+        if strategy != "bfs":
+            logger.warning("Unknown strategy %r — defaulting to 'bfs'", strategy)
+        crawl_strategy = BFSDeepCrawlStrategy(
+            max_depth=max_depth,
+            max_pages=max_pages,
+            include_external=include_external,
+            filter_chain=filter_chain,
+        )
 
     # Build per-call kwargs — only include optional params when explicitly set
     per_call_kwargs: dict = {
         "cache_mode": resolved_cache,
         "page_timeout": page_timeout * 1000,
-        "deep_crawl_strategy": strategy,
+        "deep_crawl_strategy": crawl_strategy,
     }
     # Politeness for a deep crawl is set on the run config, NOT via a
     # dispatcher. crawl4ai's DeepCrawlStrategy.arun() takes no dispatcher, and
@@ -2113,6 +2317,8 @@ async def deep_crawl(
         per_call_kwargs["user_agent"] = user_agent
     if word_count_threshold != 10:
         per_call_kwargs["word_count_threshold"] = word_count_threshold
+    if query is not None:
+        per_call_kwargs["query"] = query
 
     app: AppContext = ctx.request_context.lifespan_context
     run_cfg = build_run_config(app.profile_manager, profile, **per_call_kwargs)
@@ -2152,6 +2358,7 @@ async def crawl_sitemap(
     delay: float = 0,
     output_dir: str | None = None,
     profile: str | None = None,
+    query: str | None = None,
     cache_mode: str = "enabled",
     css_selector: str | None = None,
     excluded_selector: str | None = None,
@@ -2291,6 +2498,8 @@ async def crawl_sitemap(
         per_call_kwargs["user_agent"] = user_agent
     if word_count_threshold != 10:
         per_call_kwargs["word_count_threshold"] = word_count_threshold
+    if query is not None:
+        per_call_kwargs["query"] = query
 
     app: AppContext = ctx.request_context.lifespan_context
     run_cfg = build_run_config(app.profile_manager, profile, **per_call_kwargs)

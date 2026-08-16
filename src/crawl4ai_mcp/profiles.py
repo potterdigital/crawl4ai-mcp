@@ -20,7 +20,7 @@ from pathlib import Path
 
 import yaml
 from crawl4ai import CrawlerRunConfig
-from crawl4ai.content_filter_strategy import PruningContentFilter
+from crawl4ai.content_filter_strategy import BM25ContentFilter, PruningContentFilter
 from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ _RESERVED_KEYS: frozenset[str] = frozenset({"verbose", "markdown_generator"})
 
 # Consumed by build_run_config and routed to the content filter, not passed
 # through to CrawlerRunConfig.
-_FILTER_KEYS: frozenset[str] = frozenset({"word_count_threshold"})
+_FILTER_KEYS: frozenset[str] = frozenset({"word_count_threshold", "query"})
 
 
 class ProfileManager:
@@ -186,13 +186,25 @@ def build_run_config(
     # between statements inside a multi-line block. Callers who need verbatim
     # code should scope with css_selector and lower word_count_threshold.
     wct = merged.pop("word_count_threshold", 10)
-    merged["markdown_generator"] = DefaultMarkdownGenerator(
-        content_filter=PruningContentFilter(
+    query = merged.pop("query", None)
+
+    if query:
+        # A query swaps the filter entirely. BM25 scores each block against the
+        # query and keeps the relevant ones, so an agent asking "what does this
+        # page say about X" gets the answer filtered BEFORE the tokens are
+        # spent, instead of pulling the whole page into context to read past
+        # the irrelevant parts. Pruning is density-based and cannot do that.
+        content_filter = BM25ContentFilter(user_query=query)
+    else:
+        content_filter = PruningContentFilter(
             threshold=0.48,
             threshold_type="fixed",
             min_word_threshold=wct,
             preserve_tags=["pre", "code"],
         )
+
+    merged["markdown_generator"] = DefaultMarkdownGenerator(
+        content_filter=content_filter
     )
 
     return CrawlerRunConfig(**merged)

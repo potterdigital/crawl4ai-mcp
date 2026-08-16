@@ -25,6 +25,7 @@ AI coding assistants can't browse the web natively. This MCP server gives them a
 | `crawl_sitemap`      | Crawl all URLs from an XML sitemap (supports gzip and sitemap indexes, politeness delays, optional disk persistence) |
 | `extract_structured` | LLM-powered structured JSON extraction with a user-defined schema                                                    |
 | `extract_css`        | CSS-selector-based structured extraction — deterministic, no LLM required                                            |
+| `extract_patterns`   | Regex extraction of emails, phones, prices, dates, URLs and more — no LLM, no schema, no cost                        |
 | `create_session`     | Create a persistent browser session (preserves cookies and state)                                                    |
 | `list_sessions`      | List all active browser sessions                                                                                     |
 | `destroy_session`    | Destroy a named browser session                                                                                      |
@@ -87,6 +88,23 @@ before treating content as real.
 `crawl_url` is unchanged and still returns plain markdown. A single page has no
 tabular structure worth exposing, and wrapping it would only bury the content in
 escaping.
+
+### Filtering a page to what you asked for
+
+Every crawl tool takes an optional `query`. It swaps the default density-based
+filter for BM25 relevance scoring, so the page comes back reduced to the parts
+matching your question — before the tokens are spent, with no LLM involved:
+
+```
+crawl_url(url="https://docs.astral.sh/uv/concepts/cache/",
+          query="how do I clear or prune the cache")
+```
+
+On that page this returns roughly 23% of the full text, and it is the right 23%.
+
+`deep_crawl` additionally takes `strategy="best-first"` with
+`relevance_keywords=[...]`, which spends the `max_pages` budget on the pages
+most likely to matter rather than whatever is shallowest.
 
 ### Progress on long crawls
 

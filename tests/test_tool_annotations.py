@@ -92,6 +92,7 @@ class TestJsCodeIsNeverReadOnly:
             "deep_crawl",
             "extract_css",
             "extract_structured",
+            "extract_patterns",
         }
 
 
