@@ -3,4 +3,7 @@
 # page_timeout is in milliseconds (CrawlerRunConfig native unit).
 wait_until: domcontentloaded
 page_timeout: 60000 # 60 seconds
-word_count_threshold: 10 # preserve current server.py behavior (CrawlerRunConfig default is 200)
+# Routed to PruningContentFilter, not to CrawlerRunConfig. (An older comment
+# here said CrawlerRunConfig's default was 200; it is 1 in crawl4ai 0.9.2, so
+# nothing is being "preserved" by this value. It tunes the content filter.)
+word_count_threshold: 10

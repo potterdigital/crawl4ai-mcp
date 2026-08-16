@@ -794,7 +794,18 @@ async def _fetch_changelog_summary(version: str) -> str:
 
     On any failure, returns a fallback URL string pointing to the changelog.
     """
+    # Distinguish "could not read the changelog" from "upstream never wrote an
+    # entry for this version". The second is the common case, not an edge case:
+    # crawl4ai tagged and shipped 0.9.1 and 0.9.2 to PyPI without adding either
+    # to CHANGELOG.md, so this lookup silently fell through to a bare link for
+    # the two most recent releases and the caller could not tell that the tool
+    # had tried and found nothing.
     fallback = "Changelog: https://github.com/unclecode/crawl4ai/blob/main/CHANGELOG.md"
+    no_entry = (
+        f"No changelog entry for {version} upstream — crawl4ai does not always "
+        f"add one for a release. See the release notes:\n"
+        f"https://github.com/unclecode/crawl4ai/releases/tag/v{version}"
+    )
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
@@ -807,7 +818,7 @@ async def _fetch_changelog_summary(version: str) -> str:
         pattern = rf"## \[{re.escape(version)}\].*?\n(.*?)(?=\n## \[|$)"
         match = re.search(pattern, text, re.DOTALL)
         if not match:
-            return fallback
+            return no_entry
 
         section = match.group(1)
         # Keep category headers (### ) and first-level bullets (- **)
@@ -817,7 +828,7 @@ async def _fetch_changelog_summary(version: str) -> str:
             if stripped.startswith("### ") or stripped.startswith("- **"):
                 lines.append(stripped)
         if not lines:
-            return fallback
+            return no_entry
 
         # Truncate to 20 lines
         if len(lines) > 20:

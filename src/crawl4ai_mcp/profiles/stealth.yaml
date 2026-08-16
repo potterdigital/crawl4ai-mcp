@@ -1,6 +1,9 @@
 # Stealth profile: anti-bot evasion using CrawlerRunConfig-level settings.
-# BrowserConfig-level stealth (enable_stealth, user_agent_mode) is NOT supported
-# in profiles — those are singleton settings requiring a browser restart.
+# enable_stealth is BrowserConfig-level and is NOT settable here — that one is a
+# singleton setting requiring a browser restart.
+# user_agent_mode and user_agent_generator_config ARE per-run CrawlerRunConfig
+# settings in crawl4ai 0.9.2, so they can be set in a profile. (An older comment
+# here grouped them with enable_stealth as unsupported; that was wrong.)
 # page_timeout is in milliseconds.
 simulate_user: true # random mouse movements and human-like delays
 override_navigator: true # mask headless browser navigator properties
