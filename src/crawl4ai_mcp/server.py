@@ -406,6 +406,17 @@ PROVIDER_ENV_VARS: dict[str, str | None] = {
 
 DEFAULT_PAGE_TIMEOUT_S = 60
 
+# What extract_patterns looks for when the caller names nothing.
+#
+# phone_us used to be in here and was removed after measurement, not taste. On
+# real pages its matches are essentially all false positives: 30 of 30 on
+# Hacker News, where unix timestamps inside title attributes read as phone
+# numbers, and 182 of 182 on PyPI, where slices of hex SRI hashes do. A default
+# that returns 182 wrong answers is worse than one that returns none, because
+# the caller has no way to tell which of the two they got. Both phone patterns
+# remain available by name for pages where a phone number is genuinely expected.
+DEFAULT_PATTERNS = ("email", "url")
+
 _CACHE_MAP = {
     "enabled": CacheMode.ENABLED,
     "bypass": CacheMode.BYPASS,
@@ -430,6 +441,19 @@ _CACHE_MAP = {
 # depending on whether you happened to have visited the page before; callers
 # who want the cache can still ask for it by name.
 DEFAULT_CACHE_MODE = "bypass"
+
+
+def _check_profile(app: "AppContext", profile: str | None) -> str | None:
+    """Refuse an unknown profile name instead of silently ignoring it.
+
+    build_run_config strips an unrecognised profile with a stderr warning, and
+    stderr is invisible to an MCP client. So `profile="stealthy"` ran with no
+    profile at all and looked like the profile simply had no effect, which is
+    a much harder thing to debug than being told the name is wrong.
+    """
+    if profile is None or profile in app.profile_manager.names:
+        return None
+    return _bad_choice("profile", profile, list(app.profile_manager.names))
 
 
 def _bad_choice(param: str, value: object, valid: list[str]) -> str:
@@ -1706,6 +1730,7 @@ async def crawl_url(
     excluded_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
+    js_code_before_wait: str | None = None,
     user_agent: str | None = None,
     headers: dict | None = None,
     cookies: list | None = None,
@@ -1747,7 +1772,9 @@ async def crawl_url(
             - "enabled"    — use cache if available, fetch and store on miss (default)
             - "bypass"     — always fetch fresh; do not read or write cache
             - "disabled"   — fetch fresh; no cache read or write for this session
-            - "read_only"  — return cached result only; fail if not cached
+            - "read_only"  — prefer the cached result. Despite the name it does
+              NOT fail on a cache miss: crawl4ai's live-fetch path is not gated
+              on cache_mode, so a miss quietly fetches the page normally.
             - "write_only" — fetch fresh and overwrite cache; ignore existing cached
 
         css_selector: Restrict extraction to elements matching this CSS selector
@@ -1780,11 +1807,30 @@ async def crawl_url(
             - CSS: "css:#main-content" — wait until #main-content exists in DOM
             - JS:  "js:() => window.dataLoaded === true" — wait until JS expression is truthy
 
+            The two forms fail differently, which is worth knowing before you
+            pick one. A "css:" condition that is never met fails the crawl and
+            says so. A "js:" condition that is never met does NOT: crawl4ai
+            gives up after page_timeout and continues to extraction anyway, so
+            you get content that was never actually ready, with no error. If it
+            matters that the condition really held, prefer the css: form, or
+            check the returned content for what you were waiting on.
+
         js_code: JavaScript to execute in the page after load and before extraction.
             Use this to trigger lazy loading, click buttons, or scroll to load more.
             Examples:
             - Single string: "window.scrollTo(0, document.body.scrollHeight);"
             - Note: pass as string; crawl4ai handles execution in the page context.
+
+            Runs AFTER wait_for, which matters when the two are combined: if
+            your wait condition only becomes true because of this script, the
+            wait will time out first. Use js_code_before_wait for that case.
+
+        js_code_before_wait: JavaScript to execute BEFORE the wait_for condition
+            is evaluated. This is the one to use when the script is what makes
+            the page ready: clicking "load more", dismissing a consent banner,
+            or triggering the fetch whose result you are waiting on. Measured
+            with the wrong ordering: a condition satisfied at 6 seconds still
+            consumed the full 30-second budget.
 
         user_agent: Override the browser User-Agent string.
 
@@ -1849,6 +1895,9 @@ async def crawl_url(
     resolved_cache, cache_error = _resolve_cache_mode(cache_mode)
     if cache_error:
         return cache_error
+    profile_error = _check_profile(ctx.request_context.lifespan_context, profile)
+    if profile_error:
+        return profile_error
 
     logger.info("crawl_url: %s (cache=%s, profile=%s)", url, cache_mode, profile)
 
@@ -1868,6 +1917,8 @@ async def crawl_url(
         per_call_kwargs["wait_for"] = wait_for
     if js_code is not None:
         per_call_kwargs["js_code"] = js_code
+    if js_code_before_wait is not None:
+        per_call_kwargs["js_code_before_wait"] = js_code_before_wait
     if user_agent is not None:
         per_call_kwargs["user_agent"] = user_agent
     if session_id is not None:
@@ -2126,6 +2177,7 @@ async def crawl_many(
     excluded_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
+    js_code_before_wait: str | None = None,
     user_agent: str | None = None,
     page_timeout: int | None = None,
     word_count_threshold: int | None = None,
@@ -2193,7 +2245,9 @@ async def crawl_many(
             - "enabled"    — use cache if available, fetch and store on miss (default)
             - "bypass"     — always fetch fresh; do not read or write cache
             - "disabled"   — fetch fresh; no cache read or write for this session
-            - "read_only"  — return cached result only; fail if not cached
+            - "read_only"  — prefer the cached result. Despite the name it does
+              NOT fail on a cache miss: crawl4ai's live-fetch path is not gated
+              on cache_mode, so a miss quietly fetches the page normally.
             - "write_only" — fetch fresh and overwrite cache; ignore existing cached
 
         css_selector: Restrict extraction to elements matching this CSS selector
@@ -2215,7 +2269,9 @@ async def crawl_many(
             extracting content. Applied to ALL URLs in the batch.
 
         js_code: JavaScript to execute in each page after load and before
-            extraction. Applied to ALL URLs in the batch.
+            extraction. Applied to ALL URLs in the batch. Runs AFTER wait_for.
+        js_code_before_wait: JavaScript to run BEFORE wait_for is evaluated,
+            for when the script is what makes the wait condition true.
 
         user_agent: Override the browser User-Agent string. Not reliably
             per-call: crawl4ai applies it by mutating the shared browser config
@@ -2231,6 +2287,9 @@ async def crawl_many(
     resolved_cache, cache_error = _resolve_cache_mode(cache_mode)
     if cache_error:
         return CrawlBatchResult(crawled=0, total=0, pages=[], error=cache_error)
+    profile_error = _check_profile(ctx.request_context.lifespan_context, profile)
+    if profile_error:
+        return CrawlBatchResult(crawled=0, total=0, pages=[], error=profile_error)
 
     logger.info(
         "crawl_many: %d URLs (max_concurrent=%d, delay=%.1f, profile=%s)",
@@ -2254,6 +2313,8 @@ async def crawl_many(
         per_call_kwargs["wait_for"] = wait_for
     if js_code is not None:
         per_call_kwargs["js_code"] = js_code
+    if js_code_before_wait is not None:
+        per_call_kwargs["js_code_before_wait"] = js_code_before_wait
     if user_agent is not None:
         per_call_kwargs["user_agent"] = user_agent
     if word_count_threshold is not None:
@@ -2679,7 +2740,7 @@ async def extract_patterns(
             percentage, number, date_iso, date_us, time_24h, postal_us,
             postal_uk, html_color_hex, twitter_handle, hashtag, mac_addr,
             iban, credit_card.
-            Defaults to ["email", "phone_us", "url"] -- passing every pattern
+            Defaults to ["email", "url"] -- passing every pattern
             at once returns a lot of noise, so ask for what you want.
 
         custom_patterns: Your own named regexes, as {"name": "pattern"}. Merged
@@ -2690,7 +2751,7 @@ async def extract_patterns(
         js_code: JavaScript to run after load, before extraction.
         page_timeout: Page load timeout in seconds (default 60).
     """
-    selected = patterns if patterns is not None else ["email", "phone_us", "url"]
+    selected = patterns if patterns is not None else list(DEFAULT_PATTERNS)
 
     flag = RegexExtractionStrategy._B.NOTHING
     unknown: list[str] = []
@@ -2844,6 +2905,7 @@ async def deep_crawl(
     excluded_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
+    js_code_before_wait: str | None = None,
     user_agent: str | None = None,
     page_timeout: int | None = None,
     word_count_threshold: int | None = None,
@@ -2954,7 +3016,10 @@ async def deep_crawl(
             leaving title, description and links intact.
         excluded_selector: Exclude matching elements from extraction.
         wait_for: Wait condition before extracting each page.
-        js_code: JavaScript to execute on each page before extraction.
+        js_code: JavaScript to execute on each page before extraction. Runs
+            AFTER wait_for; use js_code_before_wait if the script is what makes
+            the wait condition true.
+        js_code_before_wait: JavaScript to run BEFORE wait_for is evaluated.
         user_agent: Override the browser User-Agent string. Not reliably
             per-call: crawl4ai applies it by mutating the shared browser config
             and browser contexts are cached, so the FIRST agent used for a
@@ -2970,6 +3035,9 @@ async def deep_crawl(
     resolved_cache, cache_error = _resolve_cache_mode(cache_mode)
     if cache_error:
         return CrawlBatchResult(crawled=0, total=0, pages=[], error=cache_error)
+    profile_error = _check_profile(ctx.request_context.lifespan_context, profile)
+    if profile_error:
+        return CrawlBatchResult(crawled=0, total=0, pages=[], error=profile_error)
 
     logger.info(
         "deep_crawl: %s (depth=%d, max_pages=%d, scope=%s, delay=%.1f)",
@@ -3156,6 +3224,8 @@ async def deep_crawl(
         per_call_kwargs["wait_for"] = wait_for
     if js_code is not None:
         per_call_kwargs["js_code"] = js_code
+    if js_code_before_wait is not None:
+        per_call_kwargs["js_code_before_wait"] = js_code_before_wait
     if user_agent is not None:
         per_call_kwargs["user_agent"] = user_agent
     if word_count_threshold is not None:
@@ -3227,6 +3297,7 @@ async def crawl_sitemap(
     excluded_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
+    js_code_before_wait: str | None = None,
     user_agent: str | None = None,
     page_timeout: int | None = None,
     word_count_threshold: int | None = None,
@@ -3287,7 +3358,10 @@ async def crawl_sitemap(
             leaving title, description and links intact.
         excluded_selector: Exclude matching elements from extraction.
         wait_for: Wait condition before extracting each page.
-        js_code: JavaScript to execute on each page before extraction.
+        js_code: JavaScript to execute on each page before extraction. Runs
+            AFTER wait_for; use js_code_before_wait if the script is what makes
+            the wait condition true.
+        js_code_before_wait: JavaScript to run BEFORE wait_for is evaluated.
         user_agent: Override the browser User-Agent string. Not reliably
             per-call: crawl4ai applies it by mutating the shared browser config
             and browser contexts are cached, so the FIRST agent used for a
@@ -3303,6 +3377,9 @@ async def crawl_sitemap(
     resolved_cache, cache_error = _resolve_cache_mode(cache_mode)
     if cache_error:
         return CrawlBatchResult(crawled=0, total=0, pages=[], error=cache_error)
+    profile_error = _check_profile(ctx.request_context.lifespan_context, profile)
+    if profile_error:
+        return CrawlBatchResult(crawled=0, total=0, pages=[], error=profile_error)
 
     logger.info(
         "crawl_sitemap: %s (max_urls=%d, max_concurrent=%d, delay=%.1f)",
@@ -3372,6 +3449,8 @@ async def crawl_sitemap(
         per_call_kwargs["wait_for"] = wait_for
     if js_code is not None:
         per_call_kwargs["js_code"] = js_code
+    if js_code_before_wait is not None:
+        per_call_kwargs["js_code_before_wait"] = js_code_before_wait
     if user_agent is not None:
         per_call_kwargs["user_agent"] = user_agent
     if word_count_threshold is not None:
