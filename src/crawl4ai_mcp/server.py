@@ -400,6 +400,33 @@ def _format_crawl_error(url: str, result) -> str:
     )
 
 
+def _extraction_error(extracted_content: str | None) -> str | None:
+    """Return the LLM failure buried in extracted_content, or None if it is data.
+
+    crawl4ai's LLMExtractionStrategy reports a failed completion in-band: the
+    strategy still "succeeds" and extracted_content becomes a list of blocks
+    flagged {"error": true}. Only the flag is reliable -- the message text
+    varies by provider -- so match on that and never on the word "error",
+    which appears in perfectly good extracted data.
+    """
+    if not extracted_content:
+        return None
+    try:
+        parsed = json.loads(extracted_content)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    blocks = parsed if isinstance(parsed, list) else [parsed]
+    messages = [
+        str(b.get("content") or "").strip()
+        for b in blocks
+        if isinstance(b, dict) and b.get("error") is True
+    ]
+    if not messages:
+        return None
+    return " | ".join(m for m in messages if m) or "the provider reported an error"
+
+
 def _check_api_key(provider: str) -> str | None:
     """Validate that the expected API key env var is set for the given provider.
 
@@ -1513,8 +1540,12 @@ async def extract_structured(
         instruction: Natural language instruction for the LLM describing
             what to extract from the page content.
         provider: LLM provider and model in litellm format (default:
-            "openai/gpt-4o-mini"). Examples: "anthropic/claude-sonnet-4-20250514",
-            "gemini/gemini-2.0-flash". The API key is read from the
+            "openai/gpt-4o-mini"). Examples: "anthropic/claude-sonnet-4-5",
+            "gemini/gemini-2.5-flash". Model names go stale: providers retire
+            them, and the call then fails with a NotFound from the provider
+            rather than anything this server can detect up front. If that
+            happens, check the provider's current model list.
+            The API key is read from the
             corresponding environment variable (e.g. OPENAI_API_KEY) —
             never pass keys as parameters.
         css_selector: Restrict extraction scope to elements matching this
@@ -1567,6 +1598,20 @@ async def extract_structured(
             f"URL: {url}\n"
             f"The LLM did not produce structured output. "
             f"Check that the schema matches the page content."
+        )
+
+    # crawl4ai does not raise when the LLM call fails; it puts the failure
+    # INSIDE extracted_content as [{"index": 0, "error": true, "content": ...}]
+    # and still reports result.success. Passed through verbatim that reads like
+    # a normal extraction, so a retired model name or a bad key comes back
+    # looking like data with a quiet "Total tokens: 0" underneath. Surface it.
+    llm_error = _extraction_error(result.extracted_content)
+    if llm_error:
+        return (
+            f"LLM extraction failed\n"
+            f"URL: {url}\n"
+            f"Provider: {provider}\n"
+            f"Error: {llm_error}"
         )
 
     # Report token usage — NEVER call strategy.show_usage() (uses print())
