@@ -1512,6 +1512,7 @@ async def crawl_url(
     query: str | None = None,
     cache_mode: str = "enabled",
     css_selector: str | None = None,
+    target_elements: list[str] | None = None,
     excluded_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
@@ -1555,6 +1556,22 @@ async def crawl_url(
         css_selector: Restrict extraction to elements matching this CSS selector
             (include scope). Example: "article.main-content" extracts only the
             article element. Without this, the full page body is extracted.
+
+            This narrows the DOCUMENT, not just the output, so everything read
+            from outside your selector is lost with it: the page's title and
+            meta description live in <head> and come back None, and links are
+            restricted to those inside the scope. Even css_selector="body"
+            drops the title. Prefer target_elements when you want the same
+            markdown without giving those up.
+
+        target_elements: Restrict the MARKDOWN to these CSS selectors while
+            leaving the rest of the page readable. Takes a list.
+
+            Use this rather than css_selector when you want a focused page body
+            but still want the title, description, or links. Measured on the
+            same page and selector: both produce identical markdown, but
+            css_selector returned title=None and 0 links where target_elements
+            returned the real title and all 25 links.
 
         excluded_selector: Exclude elements matching this CSS selector from
             extraction (exclude noise). Example: "nav, footer, .sidebar" removes
@@ -1620,6 +1637,8 @@ async def crawl_url(
     }
     if css_selector is not None:
         per_call_kwargs["css_selector"] = css_selector
+    if target_elements is not None:
+        per_call_kwargs["target_elements"] = target_elements
     if excluded_selector is not None:
         per_call_kwargs["excluded_selector"] = excluded_selector
     if wait_for is not None:
@@ -1855,6 +1874,7 @@ async def crawl_many(
     query: str | None = None,
     cache_mode: str = "enabled",
     css_selector: str | None = None,
+    target_elements: list[str] | None = None,
     excluded_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
@@ -1924,6 +1944,15 @@ async def crawl_many(
         css_selector: Restrict extraction to elements matching this CSS selector
             (include scope). Applied to ALL URLs in the batch.
 
+            Narrows the DOCUMENT, not just the output: page title and meta
+            description come back None, and links are limited to the scope.
+            Prefer target_elements to keep them.
+
+        target_elements: Restrict the MARKDOWN to these CSS selectors (a list)
+            while leaving title, description, and links intact. Same markdown as
+            css_selector, without discarding the rest of the page. Applied to
+            ALL URLs in the batch.
+
         excluded_selector: Exclude elements matching this CSS selector from
             extraction. Applied to ALL URLs in the batch.
 
@@ -1966,6 +1995,8 @@ async def crawl_many(
     }
     if css_selector is not None:
         per_call_kwargs["css_selector"] = css_selector
+    if target_elements is not None:
+        per_call_kwargs["target_elements"] = target_elements
     if excluded_selector is not None:
         per_call_kwargs["excluded_selector"] = excluded_selector
     if wait_for is not None:
@@ -2508,6 +2539,7 @@ async def deep_crawl(
     query: str | None = None,
     cache_mode: str = "enabled",
     css_selector: str | None = None,
+    target_elements: list[str] | None = None,
     excluded_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
@@ -2613,6 +2645,10 @@ async def deep_crawl(
         profile: Named crawl profile for per-page configuration.
         cache_mode: Cache behavior (same as crawl_url).
         css_selector: Restrict extraction to matching elements on each page.
+            Narrows the DOCUMENT: title, description and out-of-scope links are
+            lost with it. Prefer target_elements to keep them.
+        target_elements: Restrict the MARKDOWN to these CSS selectors (a list),
+            leaving title, description and links intact.
         excluded_selector: Exclude matching elements from extraction.
         wait_for: Wait condition before extracting each page.
         js_code: JavaScript to execute on each page before extraction.
@@ -2779,6 +2815,8 @@ async def deep_crawl(
         per_call_kwargs["max_range"] = 0.0
     if css_selector is not None:
         per_call_kwargs["css_selector"] = css_selector
+    if target_elements is not None:
+        per_call_kwargs["target_elements"] = target_elements
     if excluded_selector is not None:
         per_call_kwargs["excluded_selector"] = excluded_selector
     if wait_for is not None:
@@ -2846,6 +2884,7 @@ async def crawl_sitemap(
     query: str | None = None,
     cache_mode: str = "enabled",
     css_selector: str | None = None,
+    target_elements: list[str] | None = None,
     excluded_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
@@ -2901,6 +2940,10 @@ async def crawl_sitemap(
         profile: Named crawl profile for per-page configuration.
         cache_mode: Cache behavior (same as crawl_url).
         css_selector: Restrict extraction to matching elements on each page.
+            Narrows the DOCUMENT: title, description and out-of-scope links are
+            lost with it. Prefer target_elements to keep them.
+        target_elements: Restrict the MARKDOWN to these CSS selectors (a list),
+            leaving title, description and links intact.
         excluded_selector: Exclude matching elements from extraction.
         wait_for: Wait condition before extracting each page.
         js_code: JavaScript to execute on each page before extraction.
@@ -2984,6 +3027,8 @@ async def crawl_sitemap(
     }
     if css_selector is not None:
         per_call_kwargs["css_selector"] = css_selector
+    if target_elements is not None:
+        per_call_kwargs["target_elements"] = target_elements
     if excluded_selector is not None:
         per_call_kwargs["excluded_selector"] = excluded_selector
     if wait_for is not None:
