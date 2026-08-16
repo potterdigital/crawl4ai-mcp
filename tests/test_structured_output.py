@@ -1,0 +1,165 @@
+"""Tests for the structured results the crawl and extract tools return.
+
+These four tools return Pydantic models rather than formatted strings, so the
+SDK derives an outputSchema and clients receive real data in
+`structuredContent` instead of prose they would have to parse back.
+
+The failure modes pinned here:
+
+- a tool silently loses its declared output schema, so clients go back to
+  parsing text and cannot validate anything
+- extract_css hands back its JSON as a *string* inside the JSON result,
+  making the caller parse twice
+- an extraction failure raises out of the tool instead of being reported,
+  which loses the URL and the reason
+- malformed or unexpected extractor output crashes the tool rather than
+  being surfaced
+- crawl_url gets converted too, burying page markdown in JSON escaping for
+  no benefit
+"""
+
+import asyncio
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from crawl4ai_mcp import server as srv
+from crawl4ai_mcp.server import CrawlBatchResult, ExtractionResult, extract_css
+
+STRUCTURED_TOOLS = ["crawl_many", "crawl_sitemap", "deep_crawl", "extract_css"]
+
+
+@pytest.fixture(scope="module")
+def tools() -> list:
+    return asyncio.run(srv.mcp.list_tools())
+
+
+def _schema(tools, name) -> dict | None:
+    return next(t for t in tools if t.name == name).output_schema
+
+
+class TestDeclaredSchemas:
+    @pytest.mark.parametrize("name", STRUCTURED_TOOLS)
+    def test_tool_declares_a_real_output_schema(self, tools, name: str) -> None:
+        """A str-returning tool gets a trivial {"result": str} wrapper schema.
+        Seeing that here means the model return type was lost."""
+        schema = _schema(tools, name)
+        assert schema is not None, f"{name} has no outputSchema"
+        assert list(schema.get("properties", {})) != ["result"], (
+            f"{name} fell back to the string wrapper schema"
+        )
+
+    def test_batch_tools_share_one_shape(self, tools) -> None:
+        """Three tools crawl many pages; a caller should not need three parsers."""
+        shapes = {
+            name: sorted(_schema(tools, name)["properties"])
+            for name in ("crawl_many", "crawl_sitemap", "deep_crawl")
+        }
+        assert len(set(map(tuple, shapes.values()))) == 1, shapes
+
+    def test_crawl_url_still_returns_plain_markdown(self, tools) -> None:
+        """Converting it would bury page content in JSON escaping for no gain:
+        a single page has no tabular structure to expose."""
+        schema = _schema(tools, "crawl_url")
+        assert list(schema["properties"]) == ["result"]
+
+
+def _extraction_ctx():
+    """Minimal Context stand-in: extract_css only reaches the lifespan context."""
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context = MagicMock()
+    return ctx
+
+
+def _run_extract_css(crawl_result):
+    """Invoke extract_css with the crawler stubbed out."""
+    with (
+        patch.object(srv, "_require_crawler", return_value=MagicMock()),
+        patch.object(
+            srv, "_crawl_with_overrides", AsyncMock(return_value=crawl_result)
+        ),
+    ):
+        return asyncio.run(
+            extract_css(
+                url="https://example.com",
+                schema={"name": "X", "baseSelector": "div", "fields": []},
+                ctx=_extraction_ctx(),
+            )
+        )
+
+
+def _crawl_result(success=True, extracted=None, error_message="", status_code=200):
+    r = MagicMock()
+    r.success = success
+    r.extracted_content = extracted
+    r.error_message = error_message
+    r.status_code = status_code
+    return r
+
+
+class TestExtractCssStructured:
+    def test_items_come_back_parsed_not_as_a_json_string(self) -> None:
+        """crawl4ai hands back a JSON string. If that string is passed straight
+        through, the caller has to parse JSON out of JSON."""
+        payload = [{"title": "A", "price": "1"}, {"title": "B", "price": "2"}]
+
+        out = _run_extract_css(_crawl_result(extracted=json.dumps(payload)))
+
+        assert isinstance(out, ExtractionResult)
+        assert out.items == payload
+        assert out.count == 2
+        assert out.error is None
+        assert out.url == "https://example.com"
+
+    def test_a_single_object_becomes_a_one_item_list(self) -> None:
+        """items is declared as a list; a bare object must not break the schema."""
+        out = _run_extract_css(_crawl_result(extracted='{"title": "solo"}'))
+
+        assert out.items == [{"title": "solo"}]
+        assert out.count == 1
+
+    def test_a_failed_crawl_is_reported_not_raised(self) -> None:
+        """Raising would lose the URL and the reason the caller needs."""
+        out = _run_extract_css(
+            _crawl_result(success=False, error_message="Connection refused")
+        )
+
+        assert out.count == 0 and out.items == []
+        assert out.error is not None
+        assert "Connection refused" in out.error
+
+    def test_no_matches_explains_itself(self) -> None:
+        """An empty result is almost always a wrong selector; say so."""
+        out = _run_extract_css(_crawl_result(extracted="[]"))
+
+        assert out.count == 0 and out.items == []
+        assert "baseSelector" in out.error
+
+    def test_malformed_json_is_surfaced_not_crashed(self) -> None:
+        """A crash here would surface as an opaque tool error."""
+        out = _run_extract_css(_crawl_result(extracted="{not json"))
+
+        assert out.count == 0 and out.items == []
+        assert "malformed JSON" in out.error
+
+    def test_unexpected_top_level_type_is_surfaced(self) -> None:
+        """A bare scalar is neither a record nor a list of them."""
+        out = _run_extract_css(_crawl_result(extracted='"just a string"'))
+
+        assert out.count == 0 and out.items == []
+        assert "expected a list of records" in out.error
+
+
+class TestBatchResultRoundTrips:
+    def test_the_model_serialises_to_the_declared_schema(self) -> None:
+        """structuredContent is this dump; if it drifts from the schema, clients
+        that validate will reject perfectly good results."""
+        page = srv.PageResult(url="https://a", success=True, markdown="# hi")
+        batch = CrawlBatchResult(crawled=1, total=1, pages=[page])
+
+        dumped = batch.model_dump()
+
+        assert dumped["crawled"] == 1
+        assert dumped["pages"][0]["markdown"] == "# hi"
+        assert CrawlBatchResult.model_validate(dumped) == batch

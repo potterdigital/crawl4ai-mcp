@@ -45,6 +45,7 @@ import httpx
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 from packaging.version import Version
+from pydantic import BaseModel
 
 from crawl4ai_mcp.profiles import ProfileManager, build_run_config
 
@@ -421,53 +422,97 @@ def _check_api_key(provider: str) -> str | None:
     return None
 
 
-def _format_multi_results(results: list, include_content: bool = True) -> str:
-    """Format a list of CrawlResult objects into a structured string for Claude.
+class PageResult(BaseModel):
+    """One page from a multi-page crawl."""
 
-    Always includes both successes and failures — never discards successful results
-    because of individual URL errors. This helper is shared by crawl_many,
-    deep_crawl, and crawl_sitemap.
+    url: str
+    success: bool
+    markdown: str | None = None
+    """Page content. None on failure, and None when output_dir wrote it to disk."""
+    error: str | None = None
+    """Why the page failed. None on success."""
+    depth: int | None = None
+    """Links away from the start URL. deep_crawl only."""
+    parent_url: str | None = None
+    """The page this one was discovered from. deep_crawl only."""
+    file: str | None = None
+    """Filename written under output_dir. None unless output_dir was set."""
 
-    Args:
-        results: List of CrawlResult objects from arun_many or arun (deep crawl).
-        include_content: Whether to include markdown content for successes.
+
+class CrawlBatchResult(BaseModel):
+    """Result of a multi-page crawl.
+
+    Always reports successes and failures together: an individual URL failing
+    never discards the pages that worked, so a partial crawl stays usable.
     """
-    successes = [r for r in results if r.success]
-    failures = [r for r in results if not r.success]
 
-    parts = [f"Crawled {len(successes)} of {len(results)} URLs successfully.\n"]
+    crawled: int
+    """Pages that succeeded."""
+    total: int
+    """Pages attempted."""
+    pages: list[PageResult]
+    output_dir: str | None = None
+    """Directory the pages were written to, when output_dir was set."""
+    manifest: str | None = None
+    """Path to manifest.json, when output_dir was set."""
+    note: str | None = None
+    """Anything the caller should know, e.g. that a sitemap was truncated."""
 
-    for result in successes:
-        depth_info = ""
-        if (
-            result.metadata
-            and isinstance(result.metadata, dict)
-            and "depth" in result.metadata
-        ):
-            depth_info = f" (depth: {result.metadata['depth']})"
-        parent_info = ""
-        if (
-            result.metadata
-            and isinstance(result.metadata, dict)
-            and result.metadata.get("parent_url")
-        ):
-            parent_info = f"\nParent: {result.metadata['parent_url']}"
 
-        header = f"## {result.url}{depth_info}{parent_info}"
+class ExtractionResult(BaseModel):
+    """Result of a CSS-selector extraction."""
 
-        if include_content:
+    url: str
+    count: int
+    """Number of items matched by the schema's baseSelector."""
+    items: list[dict]
+    """Extracted records, shaped by the caller's schema. Empty when nothing matched."""
+    error: str | None = None
+    """Why extraction produced nothing. None on success."""
+
+
+def _page_results(results: list, include_content: bool = True) -> list[PageResult]:
+    """Convert crawl4ai CrawlResult objects into the wire model.
+
+    Shared by crawl_many, deep_crawl, and crawl_sitemap. Successes come first
+    so the useful half of a partial crawl is not buried under failures.
+    """
+    pages: list[PageResult] = []
+    for result in sorted(results, key=lambda r: not r.success):
+        meta = result.metadata if isinstance(result.metadata, dict) else {}
+        if result.success:
             md = result.markdown
             content = (md.fit_markdown or md.raw_markdown) if md else ""
-            parts.append(f"{header}\n\n{content}\n")
+            pages.append(
+                PageResult(
+                    url=result.url,
+                    success=True,
+                    markdown=content if include_content else None,
+                    depth=meta.get("depth"),
+                    parent_url=meta.get("parent_url"),
+                )
+            )
         else:
-            parts.append(f"{header}\n")
+            pages.append(
+                PageResult(
+                    url=result.url,
+                    success=False,
+                    error=result.error_message,
+                    depth=meta.get("depth"),
+                    parent_url=meta.get("parent_url"),
+                )
+            )
+    return pages
 
-    if failures:
-        parts.append(f"\n## Failed URLs ({len(failures)})\n")
-        for result in failures:
-            parts.append(f"- {result.url}: {result.error_message}")
 
-    return "\n".join(parts)
+def _batch_result(results: list, note: str | None = None) -> CrawlBatchResult:
+    """Build the structured result returned by every multi-page crawl tool."""
+    return CrawlBatchResult(
+        crawled=sum(1 for r in results if r.success),
+        total=len(results),
+        pages=_page_results(results),
+        note=note,
+    )
 
 
 def _sanitize_filename(url: str) -> str:
@@ -482,11 +527,14 @@ def _sanitize_filename(url: str) -> str:
     return name or "page"
 
 
-def _persist_results(results: list, output_dir: str) -> str:
+def _persist_results(
+    results: list, output_dir: str, note: str | None = None
+) -> CrawlBatchResult:
     """Write per-page .md files and a manifest.json to output_dir.
 
-    Returns a metadata-only summary string (no page content) listing
-    file paths and the manifest location.
+    Returns the same CrawlBatchResult shape as an inline crawl, with each
+    page's `file` set and its `markdown` left None: the content is on disk,
+    and repeating it in the result would defeat the point of output_dir.
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -525,18 +573,23 @@ def _persist_results(results: list, output_dir: str) -> str:
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest_entries, f, indent=2)
 
-    # Build summary (no page content — it's on disk)
-    parts = [
-        f"Saved {len(successes)} of {len(results)} pages to {output_dir}",
-        f"Manifest: {manifest_path}",
-    ]
-    for entry in manifest_entries:
-        if entry["success"]:
-            parts.append(f"  {entry['url']} -> {entry['file']}")
-        else:
-            parts.append(f"  {entry['url']} FAILED: {entry.get('error', 'unknown')}")
+    # Same shape as an inline crawl, but pointing at files instead of carrying
+    # content. include_content=False is what leaves markdown None.
+    pages = _page_results(results, include_content=False)
+    by_url = {e["url"]: e for e in manifest_entries if e.get("success")}
+    for page in pages:
+        entry = by_url.get(page.url)
+        if entry:
+            page.file = entry["file"]
 
-    return "\n".join(parts)
+    return CrawlBatchResult(
+        crawled=len(successes),
+        total=len(results),
+        pages=pages,
+        output_dir=output_dir,
+        manifest=manifest_path,
+        note=note,
+    )
 
 
 SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
@@ -1278,7 +1331,7 @@ async def crawl_many(
     page_timeout: int = 60,
     word_count_threshold: int = 10,
     ctx: Context[AppContext] = None,
-) -> str:
+) -> CrawlBatchResult:
     """Crawl multiple URLs concurrently and return all results.
 
     URLs are crawled in parallel (not sequentially) using a semaphore-based
@@ -1404,7 +1457,7 @@ async def crawl_many(
 
     if output_dir:
         return _persist_results(results, output_dir)
-    return _format_multi_results(results)
+    return _batch_result(results)
 
 
 @mcp.tool(
@@ -1526,7 +1579,7 @@ async def extract_css(
     js_code: str | None = None,
     page_timeout: int = 60,
     ctx: Context[AppContext] = None,
-) -> str:
+) -> ExtractionResult:
     """Extract structured JSON from a page using CSS selectors (no LLM, no cost).
 
     Uses crawl4ai's JsonCssExtractionStrategy for deterministic, repeatable
@@ -1595,17 +1648,49 @@ async def extract_css(
     result = await _crawl_with_overrides(_require_crawler(app), url, run_cfg)
 
     if not result.success:
-        return _format_crawl_error(url, result)
-
-    if not result.extracted_content or result.extracted_content == "[]":
-        return (
-            "No data extracted\n"
-            f"URL: {url}\n"
-            "The CSS selectors in the schema did not match any elements on the page.\n"
-            "Verify that baseSelector and field selectors are correct for this page's HTML structure."
+        return ExtractionResult(
+            url=url, count=0, items=[], error=_format_crawl_error(url, result)
         )
 
-    return result.extracted_content
+    if not result.extracted_content or result.extracted_content == "[]":
+        return ExtractionResult(
+            url=url,
+            count=0,
+            items=[],
+            error=(
+                "The CSS selectors in the schema did not match any elements on the "
+                "page. Verify that baseSelector and the field selectors are correct "
+                "for this page's HTML structure."
+            ),
+        )
+
+    # crawl4ai hands back a JSON string. Parse it so the caller gets real data
+    # rather than JSON embedded in JSON. A parse failure is reportable, not fatal.
+    try:
+        items = json.loads(result.extracted_content)
+    except json.JSONDecodeError as exc:
+        return ExtractionResult(
+            url=url,
+            count=0,
+            items=[],
+            error=f"Extraction returned malformed JSON: {exc}",
+        )
+
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list):
+        return ExtractionResult(
+            url=url,
+            count=0,
+            items=[],
+            error=f"Extraction returned {type(items).__name__}, expected a list of records.",
+        )
+
+    return ExtractionResult(
+        url=url,
+        count=len(items),
+        items=[i for i in items if isinstance(i, dict)],
+    )
 
 
 @mcp.tool(
@@ -1636,7 +1721,7 @@ async def deep_crawl(
     page_timeout: int = 60,
     word_count_threshold: int = 10,
     ctx: Context[AppContext] = None,
-) -> str:
+) -> CrawlBatchResult:
     """Crawl a site by following links from a start URL using BFS (breadth-first search).
 
     Starting from the given URL, discovers all links on the page, crawls them,
@@ -1781,7 +1866,7 @@ async def deep_crawl(
 
     if output_dir:
         return _persist_results(results, output_dir)
-    return _format_multi_results(results)
+    return _batch_result(results)
 
 
 @mcp.tool(
@@ -1809,7 +1894,7 @@ async def crawl_sitemap(
     page_timeout: int = 60,
     word_count_threshold: int = 10,
     ctx: Context[AppContext] = None,
-) -> str:
+) -> CrawlBatchResult:
     """Crawl all pages listed in an XML sitemap.
 
     Fetches the sitemap XML via HTTP (not the browser -- sitemaps are plain XML),
@@ -1935,16 +2020,16 @@ async def crawl_sitemap(
         f"Crawling {len(urls)} sitemap URLs",
     )
 
-    if output_dir:
-        output = _persist_results(results, output_dir)
-    else:
-        output = _format_multi_results(results)
+    note = None
     if truncated:
-        output = (
-            f"Note: Sitemap contained {total_sitemap_urls} URLs; "
-            f"crawled first {max_urls} (max_urls limit).\n\n{output}"
+        note = (
+            f"Sitemap contained {total_sitemap_urls} URLs; crawled the first "
+            f"{max_urls} (max_urls limit)."
         )
-    return output
+
+    if output_dir:
+        return _persist_results(results, output_dir, note=note)
+    return _batch_result(results, note=note)
 
 
 def _preflight_playwright() -> None:

@@ -108,8 +108,13 @@ class TestPersistResults:
         assert len(manifest) == 2
         assert all(e["success"] for e in manifest)
 
-        # Summary mentions the output dir
-        assert out in summary
+        # The result points at the files rather than repeating their content:
+        # carrying the markdown inline would defeat the point of output_dir.
+        assert summary.output_dir == out
+        assert summary.manifest == os.path.join(out, "manifest.json")
+        assert (summary.crawled, summary.total) == (2, 2)
+        assert all(p.markdown is None for p in summary.pages)
+        assert sorted(p.file for p in summary.pages) == sorted(files)
 
     def test_md_file_content(self, tmp_path) -> None:
         """Written .md file contains the crawl result content."""
@@ -143,7 +148,15 @@ class TestPersistResults:
         md_files = [f for f in os.listdir(out) if f.endswith(".md")]
         assert len(md_files) == 1
 
-        assert "FAILED" in summary
+        # The failure is reportable from the result itself, not only the manifest,
+        # and it carries no file because nothing was written for it.
+        assert (summary.crawled, summary.total) == (1, 2)
+        bad = next(p for p in summary.pages if p.url.endswith("/bad"))
+        assert not bad.success
+        assert bad.error == "timeout"
+        assert bad.file is None
+        good = next(p for p in summary.pages if p.url.endswith("/good"))
+        assert good.file == md_files[0]
 
     def test_depth_metadata_in_manifest(self, tmp_path) -> None:
         """Depth and parent_url metadata propagate to manifest entries."""

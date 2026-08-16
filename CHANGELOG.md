@@ -4,7 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.3.0] - 2026-08-16
+## [2.0.0] - 2026-08-16
+
+### Breaking
+
+- **The multi-page crawl and CSS extraction tools now return structured data instead of a formatted string.** `crawl_many`, `crawl_sitemap`, and `deep_crawl` return a `CrawlBatchResult`; `extract_css` returns an `ExtractionResult`. Each declares an `outputSchema` and populates `structuredContent`, so a client can sort, filter, and validate results instead of parsing prose. `crawl_url` is deliberately unchanged and still returns plain markdown: a single page has no tabular structure to expose, and converting it would only bury the content in JSON escaping.
+
+  `CrawlBatchResult` carries `crawled`, `total`, `pages[]`, and optional `output_dir`, `manifest`, and `note`. Each page carries `url`, `success`, and then `markdown` or `error`, plus `depth` / `parent_url` for `deep_crawl` and `file` when `output_dir` was used. Successes sort ahead of failures so the useful half of a partial crawl is not buried.
+
+  `extract_css` also now returns its records **parsed**, in `items`, rather than as a JSON string the caller had to decode a second time. Failures that used to come back as a human-readable error string are now reported in the `error` field with `count: 0`, so the URL and the reason survive.
+
+  Migrating: read `structuredContent`, or parse the text block as JSON. The text block is the same data, pretty-printed. Anything matching on the old `Crawled N of M URLs successfully.` / `## Failed URLs` prose needs updating.
 
 ### Fixed
 

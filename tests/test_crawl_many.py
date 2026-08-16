@@ -1,19 +1,21 @@
-"""Unit tests for crawl_many tool registration, _format_multi_results helper, and
-_PER_CALL_KEYS update for deep_crawl_strategy.
+"""Unit tests for crawl_many registration and the structured batch result.
 
-Tests cover:
-- crawl_many is registered as an MCP tool
-- _format_multi_results formats success-only results correctly
-- _format_multi_results formats mixed success/failure results (never discards successes)
-- _format_multi_results formats all-failure results correctly
-- _format_multi_results includes depth metadata when present (for deep_crawl reuse)
-- deep_crawl_strategy is in _PER_CALL_KEYS
+The batch crawl tools return a CrawlBatchResult model rather than a formatted
+string, so the SDK derives an outputSchema and clients get real data in
+`structuredContent` instead of prose they would have to parse.
+
+Each test below pins one property that a caller depends on:
+- a partial crawl never discards the pages that worked
+- failures carry their reason, so a caller can tell a timeout from a 404
+- deep_crawl's depth and parent metadata survive into the model
+- successes sort ahead of failures, so the useful half is not buried
+- deep_crawl_strategy still reaches build_run_config
 """
 
 from unittest.mock import MagicMock
 
 from crawl4ai_mcp.profiles import _PER_CALL_KEYS
-from crawl4ai_mcp.server import _format_multi_results, mcp
+from crawl4ai_mcp.server import CrawlBatchResult, _batch_result, mcp
 
 
 def _make_result(url: str, success: bool = True, content: str = "page content",
@@ -35,103 +37,131 @@ def _make_result(url: str, success: bool = True, content: str = "page content",
 
 
 # ---------------------------------------------------------------------------
-# crawl_many — tool registration
+# crawl_many — tool registration and declared output shape
 # ---------------------------------------------------------------------------
 
 
 class TestCrawlManyRegistration:
     def test_crawl_many_tool_registered(self) -> None:
-        """crawl_many is registered in the FastMCP tool manager."""
-        tool_names = list(mcp._tool_manager._tools.keys())
-        assert "crawl_many" in tool_names
+        """crawl_many is registered in the tool manager."""
+        assert "crawl_many" in list(mcp._tool_manager._tools.keys())
 
 
 # ---------------------------------------------------------------------------
-# _format_multi_results — success cases
+# _batch_result — success cases
 # ---------------------------------------------------------------------------
 
 
-class TestFormatMultiResultsSuccess:
-    def test_format_multi_results_success(self) -> None:
-        """Formats successful results with summary line, URL headers, and content."""
+class TestBatchResultSuccess:
+    def test_all_successes(self) -> None:
+        """Counts and content survive into the model."""
         results = [
             _make_result("https://example.com/page1", content="Page 1 content"),
             _make_result("https://example.com/page2", content="Page 2 content"),
         ]
-        output = _format_multi_results(results)
+        out = _batch_result(results)
 
-        assert "Crawled 2 of 2 URLs successfully." in output
-        assert "## https://example.com/page1" in output
-        assert "## https://example.com/page2" in output
-        assert "Page 1 content" in output
-        assert "Page 2 content" in output
-        assert "Failed URLs" not in output
+        assert isinstance(out, CrawlBatchResult)
+        assert (out.crawled, out.total) == (2, 2)
+        assert [p.url for p in out.pages] == [
+            "https://example.com/page1",
+            "https://example.com/page2",
+        ]
+        assert [p.markdown for p in out.pages] == ["Page 1 content", "Page 2 content"]
+        assert all(p.success for p in out.pages)
+        assert all(p.error is None for p in out.pages)
 
 
 # ---------------------------------------------------------------------------
-# _format_multi_results — mixed success/failure
+# _batch_result — mixed success/failure
 # ---------------------------------------------------------------------------
 
 
-class TestFormatMultiResultsMixed:
-    def test_format_multi_results_mixed(self) -> None:
-        """Formats mixed results with BOTH successes and failures — never discards successes."""
+class TestBatchResultMixed:
+    def test_partial_crawl_keeps_successes_and_failures(self) -> None:
+        """A failing URL must never discard the pages that worked."""
         results = [
             _make_result("https://example.com/good", content="Good content"),
             _make_result("https://example.com/bad", success=False,
                          error_message="Connection timeout"),
         ]
-        output = _format_multi_results(results)
+        out = _batch_result(results)
 
-        assert "Crawled 1 of 2 URLs successfully." in output
-        # Success is present
-        assert "## https://example.com/good" in output
-        assert "Good content" in output
-        # Failure is present
-        assert "## Failed URLs (1)" in output
-        assert "https://example.com/bad: Connection timeout" in output
+        assert (out.crawled, out.total) == (1, 2)
+
+        good = next(p for p in out.pages if p.url.endswith("/good"))
+        assert good.success and good.markdown == "Good content"
+
+        bad = next(p for p in out.pages if p.url.endswith("/bad"))
+        assert not bad.success
+        assert bad.error == "Connection timeout"
+        assert bad.markdown is None
+
+    def test_successes_sort_before_failures(self) -> None:
+        """Otherwise a mostly-failed crawl buries the pages the caller wanted."""
+        results = [
+            _make_result("https://example.com/bad1", success=False, error_message="x"),
+            _make_result("https://example.com/good", content="c"),
+            _make_result("https://example.com/bad2", success=False, error_message="y"),
+        ]
+        out = _batch_result(results)
+
+        assert [p.success for p in out.pages] == [True, False, False]
 
 
 # ---------------------------------------------------------------------------
-# _format_multi_results — all failures
+# _batch_result — all failures
 # ---------------------------------------------------------------------------
 
 
-class TestFormatMultiResultsAllFailures:
-    def test_format_multi_results_all_failures(self) -> None:
-        """Formats all-failure results with 0 of N summary and failure section."""
+class TestBatchResultAllFailures:
+    def test_all_failures_report_every_reason(self) -> None:
+        """A caller distinguishing DNS from TLS needs the per-URL reason."""
         results = [
             _make_result("https://example.com/fail1", success=False,
                          error_message="DNS resolution failed"),
             _make_result("https://example.com/fail2", success=False,
                          error_message="SSL handshake error"),
         ]
-        output = _format_multi_results(results)
+        out = _batch_result(results)
 
-        assert "Crawled 0 of 2 URLs successfully." in output
-        assert "## Failed URLs (2)" in output
-        assert "https://example.com/fail1: DNS resolution failed" in output
-        assert "https://example.com/fail2: SSL handshake error" in output
+        assert (out.crawled, out.total) == (0, 2)
+        assert {p.error for p in out.pages} == {
+            "DNS resolution failed",
+            "SSL handshake error",
+        }
 
 
 # ---------------------------------------------------------------------------
-# _format_multi_results — depth metadata (deep_crawl reuse)
+# _batch_result — deep_crawl metadata
 # ---------------------------------------------------------------------------
 
 
-class TestFormatMultiResultsDepthMetadata:
-    def test_format_multi_results_depth_metadata(self) -> None:
-        """Includes depth info in URL header when result.metadata contains 'depth'."""
+class TestBatchResultDepthMetadata:
+    def test_depth_and_parent_survive(self) -> None:
+        """deep_crawl's tree shape is only reconstructable if these carry through."""
         results = [
             _make_result("https://example.com/root", content="Root page",
                          metadata={"depth": 0}),
             _make_result("https://example.com/child", content="Child page",
                          metadata={"depth": 1, "parent_url": "https://example.com/root"}),
         ]
-        output = _format_multi_results(results)
+        out = _batch_result(results)
 
-        assert "## https://example.com/root (depth: 0)" in output
-        assert "## https://example.com/child (depth: 1)" in output
+        root = next(p for p in out.pages if p.url.endswith("/root"))
+        child = next(p for p in out.pages if p.url.endswith("/child"))
+        assert root.depth == 0 and root.parent_url is None
+        assert child.depth == 1
+        assert child.parent_url == "https://example.com/root"
+
+    def test_note_is_carried_when_given(self) -> None:
+        """crawl_sitemap reports truncation through this field."""
+        out = _batch_result([_make_result("https://example.com/a")], note="truncated")
+        assert out.note == "truncated"
+
+    def test_note_is_none_by_default(self) -> None:
+        out = _batch_result([_make_result("https://example.com/a")])
+        assert out.note is None
 
 
 # ---------------------------------------------------------------------------

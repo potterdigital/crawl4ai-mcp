@@ -45,6 +45,42 @@ so your client can reason about it before calling:
   against an arbitrary URL. They only ever add: a cache entry, a session page, or
   files under `output_dir`.
 
+### Result shapes
+
+`crawl_many`, `crawl_sitemap`, and `deep_crawl` return structured results with a
+declared output schema, so you get real data in `structuredContent` rather than
+prose to parse:
+
+```jsonc
+{
+  "crawled": 2,          // pages that succeeded
+  "total": 3,            // pages attempted
+  "pages": [
+    { "url": "https://example.com/a", "success": true, "markdown": "# Title\n\n..." },
+    { "url": "https://example.com/b", "success": true, "markdown": "...", "depth": 1,
+      "parent_url": "https://example.com/a" },        // depth/parent: deep_crawl only
+    { "url": "https://example.com/c", "success": false, "error": "Connection timeout" }
+  ],
+  "output_dir": null,    // set when you passed output_dir
+  "manifest": null,      // path to manifest.json, same condition
+  "note": null           // e.g. that a sitemap was truncated at max_urls
+}
+```
+
+Successes sort ahead of failures, and a failing URL never discards the pages that
+worked. With `output_dir` set, each page carries `file` instead of `markdown` —
+the content is on disk. That is the better mode for large content-heavy crawls,
+since inline markdown comes back JSON-escaped.
+
+`extract_css` returns `{ "url", "count", "items": [...], "error" }` with `items`
+already parsed, not as a JSON string you decode twice.
+
+`crawl_url` is unchanged and still returns plain markdown. A single page has no
+tabular structure worth exposing, and wrapping it would only bury the content in
+escaping.
+
+### Progress on long crawls
+
 Long-running tools (`crawl_many`, `crawl_sitemap`, `deep_crawl`, `repair_browser`)
 report progress while they work. Clients abort a tool call that goes silent for too
 long — Claude Code's default is 30 minutes on stdio — so a large crawl that emitted
