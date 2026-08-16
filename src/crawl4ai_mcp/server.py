@@ -47,6 +47,7 @@ from crawl4ai.deep_crawling import (
     FilterChain,
     URLPatternFilter,
 )
+from crawl4ai.deep_crawling.filters import DomainFilter
 from crawl4ai.deep_crawling.scorers import KeywordRelevanceScorer
 import httpx
 from mcp.server.mcpserver import Context, MCPServer
@@ -568,6 +569,43 @@ def _check_api_key(provider: str) -> str | None:
     return None
 
 
+class PageLink(BaseModel):
+    """One hyperlink found on a crawled page."""
+
+    href: str
+    text: str | None = None
+    """The link's visible text, when it has any. Empty for image and icon links."""
+    title: str | None = None
+    """The link's title attribute, when it has one."""
+
+
+class PageLinks(BaseModel):
+    """A page's outgoing links, split the way crawl4ai splits them.
+
+    The internal/external split compares registrable domains, so a link to a
+    subdomain counts as internal. Same rule `deep_crawl`'s scope uses.
+    """
+
+    internal: list[PageLink] = []
+    external: list[PageLink] = []
+
+
+class PageTable(BaseModel):
+    """One HTML table crawl4ai judged to be real tabular data.
+
+    crawl4ai scores every <table> and keeps those above its threshold, so
+    layout tables are already filtered out and this is not simply every table
+    tag on the page.
+    """
+
+    headers: list[str] = []
+    """Column headers. Empty when the table has no header row."""
+    rows: list[list[str]] = []
+    """Body rows, each a list of cell strings aligned to headers."""
+    caption: str | None = None
+    """The table's <caption>, when it has one."""
+
+
 class PageResult(BaseModel):
     """One page from a multi-page crawl."""
 
@@ -597,6 +635,10 @@ class PageResult(BaseModel):
     """The page this one was discovered from. deep_crawl only."""
     file: str | None = None
     """Filename written under output_dir. None unless output_dir was set."""
+    links: PageLinks | None = None
+    """Outgoing links. None unless include_links was set on the call."""
+    tables: list[PageTable] | None = None
+    """Tabular data found on the page. None unless include_tables was set."""
 
 
 class CrawlBatchResult(BaseModel):
@@ -638,11 +680,92 @@ class ExtractionResult(BaseModel):
     """Why extraction produced nothing. None on success."""
 
 
-def _page_results(results: list, include_content: bool = True) -> list[PageResult]:
+def _clean_str(value: object) -> str | None:
+    """Return a stripped string, or None when there is nothing in it.
+
+    crawl4ai fills absent link text and titles with "" rather than leaving
+    them out, and an empty string is worth nothing to a caller while still
+    costing a field in every one of a thousand links.
+    """
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _page_links(raw: object) -> PageLinks:
+    """Project crawl4ai's link dicts down to the three fields worth carrying.
+
+    crawl4ai attaches seven more per link -- base_domain, head_data,
+    head_extraction_status, head_extraction_error and three scores -- which are
+    None or 0.0 unless link-head extraction or a scorer ran, neither of which
+    this server enables. Measured on a Wikipedia article, dropping them takes
+    the payload from 317KB to 132KB for the same 997 links.
+
+    No deduplication: crawl4ai already returns each href once (verified on
+    Wikipedia, 997 links and 997 distinct hrefs), so deduping here would only
+    be a lossy transform with nothing to gain.
+    """
+    links = raw if isinstance(raw, dict) else {}
+    projected: dict[str, list[PageLink]] = {}
+    for kind in ("internal", "external"):
+        entries = links.get(kind)
+        entries = entries if isinstance(entries, list) else []
+        projected[kind] = [
+            PageLink(
+                href=entry["href"],
+                text=_clean_str(entry.get("text")),
+                title=_clean_str(entry.get("title")),
+            )
+            for entry in entries
+            if isinstance(entry, dict) and _clean_str(entry.get("href"))
+        ]
+    return PageLinks(internal=projected["internal"], external=projected["external"])
+
+
+def _page_tables(raw: object) -> list[PageTable]:
+    """Project crawl4ai's extracted tables onto the model.
+
+    Drops the `metadata` block, whose useful members (row_count, column_count)
+    are len() of what is already here and whose remainder is the table's raw
+    id and class attributes.
+    """
+    tables = raw if isinstance(raw, list) else []
+    out: list[PageTable] = []
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        headers = table.get("headers")
+        rows = table.get("rows")
+        out.append(
+            PageTable(
+                headers=[str(h) for h in headers] if isinstance(headers, list) else [],
+                rows=[
+                    [str(cell) for cell in row]
+                    for row in (rows if isinstance(rows, list) else [])
+                    if isinstance(row, list)
+                ],
+                caption=_clean_str(table.get("caption")),
+            )
+        )
+    return out
+
+
+def _page_results(
+    results: list,
+    include_content: bool = True,
+    include_links: bool = False,
+    include_tables: bool = False,
+) -> list[PageResult]:
     """Convert crawl4ai CrawlResult objects into the wire model.
 
     Shared by crawl_many, deep_crawl, and crawl_sitemap. Successes come first
     so the useful half of a partial crawl is not buried under failures.
+
+    links and tables are populated by crawl4ai on every crawl and were
+    discarded here until they were asked for, because both can dwarf the page
+    content: one Wikipedia article carries 997 internal links. They are opt-in
+    per call rather than always-on for that reason.
     """
     pages: list[PageResult] = []
     for result in sorted(results, key=lambda r: not r.success):
@@ -660,6 +783,16 @@ def _page_results(results: list, include_content: bool = True) -> list[PageResul
                     markdown=content if include_content else None,
                     depth=meta.get("depth"),
                     parent_url=meta.get("parent_url"),
+                    links=(
+                        _page_links(getattr(result, "links", None))
+                        if include_links
+                        else None
+                    ),
+                    tables=(
+                        _page_tables(getattr(result, "tables", None))
+                        if include_tables
+                        else None
+                    ),
                 )
             )
         else:
@@ -684,12 +817,19 @@ def _page_results(results: list, include_content: bool = True) -> list[PageResul
     return pages
 
 
-def _batch_result(results: list, note: str | None = None) -> CrawlBatchResult:
+def _batch_result(
+    results: list,
+    note: str | None = None,
+    include_links: bool = False,
+    include_tables: bool = False,
+) -> CrawlBatchResult:
     """Build the structured result returned by every multi-page crawl tool."""
     return CrawlBatchResult(
         crawled=sum(1 for r in results if r.success),
         total=len(results),
-        pages=_page_results(results),
+        pages=_page_results(
+            results, include_links=include_links, include_tables=include_tables
+        ),
         note=note,
     )
 
@@ -725,13 +865,21 @@ def _sanitize_filename(url: str) -> str:
 
 
 def _persist_results(
-    results: list, output_dir: str, note: str | None = None
+    results: list,
+    output_dir: str,
+    note: str | None = None,
+    include_links: bool = False,
+    include_tables: bool = False,
 ) -> CrawlBatchResult:
     """Write per-page .md files and a manifest.json to output_dir.
 
     Returns the same CrawlBatchResult shape as an inline crawl, with each
     page's `file` set and its `markdown` left None: the content is on disk,
     and repeating it in the result would defeat the point of output_dir.
+
+    Requested links and tables still come back inline. Only the markdown has a
+    file to be written to; inventing a second on-disk format for the structured
+    data would leave the caller parsing files to get what they just asked for.
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -772,7 +920,12 @@ def _persist_results(
 
     # Same shape as an inline crawl, but pointing at files instead of carrying
     # content. include_content=False is what leaves markdown None.
-    pages = _page_results(results, include_content=False)
+    pages = _page_results(
+        results,
+        include_content=False,
+        include_links=include_links,
+        include_tables=include_tables,
+    )
     by_url = {e["url"]: e for e in manifest_entries if e.get("success")}
     for page in pages:
         entry = by_url.get(page.url)
@@ -1696,6 +1849,8 @@ async def crawl_many(
     max_concurrent: int = 10,
     delay: float = 0,
     output_dir: str | None = None,
+    include_links: bool = False,
+    include_tables: bool = False,
     profile: str | None = None,
     query: str | None = None,
     cache_mode: str = "enabled",
@@ -1738,6 +1893,22 @@ async def crawl_many(
             Existing files are overwritten without warning when their names
             collide — manifest.json always is. Point this at a directory you
             own, not one holding files you need.
+
+        include_links: Also return each page's outgoing links, split into
+            internal and external (default False). crawl4ai collects these on
+            every crawl regardless; they are off by default because they are
+            frequently larger than the page content itself. Measured on one
+            Wikipedia article: 997 internal links, about 130KB of JSON. Turn
+            this on to map a site's structure, or to choose what to crawl next
+            without paying for a full deep crawl. Requested links still come
+            back inline when output_dir is set; only markdown goes to disk.
+
+        include_tables: Also return tabular data crawl4ai extracted from each
+            page, as headers plus rows plus caption (default False). crawl4ai
+            scores every table and keeps only those it judges to be real data,
+            so page-layout tables are already filtered out. Off by default for
+            the same size reason — a single reference table can run to hundreds
+            of rows — but nothing is truncated when it is on.
 
         profile: Name of a crawl profile to use as base configuration.
             Per-call parameters take precedence over profile values.
@@ -1834,8 +2005,15 @@ async def crawl_many(
     )
 
     if output_dir:
-        return _persist_results(results, output_dir)
-    return _batch_result(results)
+        return _persist_results(
+            results,
+            output_dir,
+            include_links=include_links,
+            include_tables=include_tables,
+        )
+    return _batch_result(
+        results, include_links=include_links, include_tables=include_tables
+    )
 
 
 @mcp.tool(
@@ -2319,9 +2497,13 @@ async def deep_crawl(
     relevance_keywords: list[str] | None = None,
     include_pattern: str | None = None,
     exclude_pattern: str | None = None,
+    allowed_domains: list[str] | None = None,
+    blocked_domains: list[str] | None = None,
     max_concurrent: int = 5,
     delay: float = 0,
     output_dir: str | None = None,
+    include_links: bool = False,
+    include_tables: bool = False,
     profile: str | None = None,
     query: str | None = None,
     cache_mode: str = "enabled",
@@ -2372,6 +2554,28 @@ async def deep_crawl(
             "/internal/*" to skip internal links). URLs matching this pattern
             will not be crawled.
 
+        allowed_domains: Follow links only on these hosts. This is what `scope`
+            cannot express: "the docs site AND its separate api host". Setting
+            it REPLACES `scope` as the boundary of the crawl, because crawl4ai
+            discards off-domain links before any filter runs, so an allowlist
+            can only take effect once external links are let through.
+
+            List every host you want crawled, INCLUDING the start URL's own.
+            Leaving it out is legal and does something surprising: the start
+            page is still fetched (depth 0 is not filtered), but every link
+            back into its own site is dropped and only the listed hosts are
+            traversed. The result carries a note when that happens rather than
+            leaving you to work out why the crawl went sideways.
+
+            Subdomains of a listed domain are included ("example.com" allows
+            "api.example.com"), matching crawl4ai's rule everywhere else. Give
+            the bare host with no scheme and no port.
+
+        blocked_domains: Never follow links on these hosts, and their
+            subdomains. Applies on top of whatever `scope` or `allowed_domains`
+            already permits, so it can carve a host out of a same-domain crawl
+            without widening anything.
+
         max_concurrent: Maximum pages fetched simultaneously (default 5,
             crawl4ai's own default for a deep crawl). Unlike crawl_many, a
             deep crawl cannot use a custom dispatcher — crawl4ai's deep-crawl
@@ -2394,6 +2598,17 @@ async def deep_crawl(
             Existing files are overwritten without warning when their names
             collide — manifest.json always is. Point this at a directory you
             own, not one holding files you need.
+
+        include_links: Also return each page's outgoing links, split into
+            internal and external (default False). Off by default because the
+            links frequently outweigh the page content: measured at 997
+            internal links, about 130KB of JSON, for one Wikipedia article.
+            Across a hundred-page deep crawl that multiplies.
+
+        include_tables: Also return tabular data crawl4ai extracted from each
+            page, as headers plus rows plus caption (default False). Only
+            tables crawl4ai scored as real data are included, so page-layout
+            tables are already filtered out. Nothing is truncated when on.
 
         profile: Named crawl profile for per-page configuration.
         cache_mode: Cache behavior (same as crawl_url).
@@ -2435,6 +2650,15 @@ async def deep_crawl(
         filters.append(URLPatternFilter(patterns=[include_pattern]))
     if exclude_pattern is not None:
         filters.append(URLPatternFilter(patterns=[exclude_pattern], reverse=True))
+
+    domain_filter = None
+    if allowed_domains or blocked_domains:
+        domain_filter = DomainFilter(
+            allowed_domains=list(allowed_domains) if allowed_domains else None,
+            blocked_domains=list(blocked_domains) if blocked_domains else None,
+        )
+        filters.append(domain_filter)
+
     filter_chain = FilterChain(filters=filters) if filters else FilterChain()
 
     # Map scope to include_external.
@@ -2451,6 +2675,51 @@ async def deep_crawl(
     else:
         logger.warning("Unknown scope %r — defaulting to 'same-domain'", scope)
         include_external = False
+
+    # An allowlist has to widen the link pool before it can narrow it.
+    #
+    # crawl4ai applies include_external in link_discovery, which chooses which
+    # links even enter the candidate set, and runs the filter chain afterwards
+    # on what survived (verified by reading BFSDeepCrawlStrategy.link_discovery
+    # and can_process_url in 0.9.2). So with include_external False, an
+    # off-domain host named in allowed_domains is already gone by the time the
+    # DomainFilter could admit it, and the parameter would be silently inert —
+    # the exact failure this capability exists to remove.
+    #
+    # Turning it on hands the boundary to the allowlist, which is stricter than
+    # scope ever was: nothing outside the listed hosts is followed. Only
+    # allowed_domains does this. blocked_domains subtracts, so it composes with
+    # any scope without touching it.
+    if allowed_domains:
+        include_external = True
+
+    # An allowlist that does not cover the start URL's own host is legal and
+    # crawl4ai runs it without complaint, but it almost never means what it
+    # looks like. Depth 0 bypasses the filter chain, so the start page is
+    # fetched; every link back into its own site is then rejected, and only the
+    # listed hosts are traversed. The caller asked to crawl a site and got the
+    # site's front page plus somebody else's, with nothing saying why.
+    #
+    # Measured, not assumed: starting at docs.astral.sh/uv/ with
+    # allowed_domains=["github.com"] crawled 4 pages, one of them the start
+    # page and three on github.com. An earlier version of this note claimed
+    # "only that page was crawled" and was simply wrong.
+    #
+    # Asks DomainFilter itself rather than reimplementing its matching, so the
+    # note cannot drift from the rule actually being enforced. A throwaway
+    # instance keeps this probe out of the live filter's own hit counters.
+    scope_note = None
+    if allowed_domains and not DomainFilter(
+        allowed_domains=list(allowed_domains),
+        blocked_domains=list(blocked_domains) if blocked_domains else None,
+    ).apply(url):
+        scope_note = (
+            f"allowed_domains does not cover the start URL's own host, so links "
+            f"from {url} back into that site were not followed. Only the listed "
+            f"domains were crawled. Add the start URL's host to allowed_domains "
+            f"to crawl the starting site as well."
+        )
+        logger.warning("deep_crawl: %s", scope_note)
 
     # MUST be fresh per call — the strategies carry mutable traversal state.
     #
@@ -2541,8 +2810,19 @@ async def deep_crawl(
     )
 
     if output_dir:
-        return _persist_results(results, output_dir)
-    return _batch_result(results)
+        return _persist_results(
+            results,
+            output_dir,
+            note=scope_note,
+            include_links=include_links,
+            include_tables=include_tables,
+        )
+    return _batch_result(
+        results,
+        note=scope_note,
+        include_links=include_links,
+        include_tables=include_tables,
+    )
 
 
 @mcp.tool(
@@ -2560,6 +2840,8 @@ async def crawl_sitemap(
     max_concurrent: int = 10,
     delay: float = 0,
     output_dir: str | None = None,
+    include_links: bool = False,
+    include_tables: bool = False,
     profile: str | None = None,
     query: str | None = None,
     cache_mode: str = "enabled",
@@ -2604,6 +2886,17 @@ async def crawl_sitemap(
             Existing files are overwritten without warning when their names
             collide — manifest.json always is. Point this at a directory you
             own, not one holding files you need.
+
+        include_links: Also return each page's outgoing links, split into
+            internal and external (default False). Off by default because the
+            links frequently outweigh the page content: measured at 997
+            internal links, about 130KB of JSON, for one Wikipedia article.
+            A sitemap crawl covers hundreds of pages, so this multiplies.
+
+        include_tables: Also return tabular data crawl4ai extracted from each
+            page, as headers plus rows plus caption (default False). Only
+            tables crawl4ai scored as real data are included, so page-layout
+            tables are already filtered out. Nothing is truncated when on.
 
         profile: Named crawl profile for per-page configuration.
         cache_mode: Cache behavior (same as crawl_url).
@@ -2734,8 +3027,19 @@ async def crawl_sitemap(
         )
 
     if output_dir:
-        return _persist_results(results, output_dir, note=note)
-    return _batch_result(results, note=note)
+        return _persist_results(
+            results,
+            output_dir,
+            note=note,
+            include_links=include_links,
+            include_tables=include_tables,
+        )
+    return _batch_result(
+        results,
+        note=note,
+        include_links=include_links,
+        include_tables=include_tables,
+    )
 
 
 def _preflight_playwright() -> None:
