@@ -14,6 +14,7 @@ Design constraints:
     a warning log — they never reach CrawlerRunConfig(**merged).
 """
 
+import inspect
 import logging
 from pathlib import Path
 
@@ -27,44 +28,33 @@ logger = logging.getLogger(__name__)
 # Default location: src/crawl4ai_mcp/profiles/
 PROFILES_DIR = Path(__file__).parent / "profiles"
 
-# Keys that are valid for YAML profile files.
-# verbose is intentionally excluded — it is handled unconditionally after merge.
-# word_count_threshold is included here but will be popped before CrawlerRunConfig(**).
-KNOWN_KEYS: frozenset[str] = frozenset(
-    {
-        "wait_until",
-        "page_timeout",
-        "delay_before_return_html",
-        "simulate_user",
-        "override_navigator",
-        "magic",
-        "scan_full_page",
-        "scroll_delay",
-        "remove_overlay_elements",
-        "word_count_threshold",
-        "cache_mode",
-        "mean_delay",
-        "max_range",
-    }
-)
+def _valid_config_keys() -> frozenset[str]:
+    """Every parameter CrawlerRunConfig actually accepts, read from the class.
 
-# Per-call-only params: valid CrawlerRunConfig kwargs but not in YAML profiles.
-# These are merged in via **per_call_overrides and must not trigger unknown-key warnings.
-_PER_CALL_KEYS: frozenset[str] = frozenset(
-    {
-        "css_selector",
-        "excluded_selector",
-        "wait_for",
-        "js_code",
-        "user_agent",
-        "deep_crawl_strategy",
-        "session_id",  # AUTH-02: persistent named sessions
-    }
-)
+    Derived from the live signature rather than a hand-written list. The list
+    this replaced named 20 keys against a class that accepts 99, so 77 upstream
+    parameters could not be reached from a profile OR a per-call override --
+    `excluded_tags`, `exclude_external_links`, `check_robots_txt`,
+    `remove_consent_popups`, `target_elements`, `only_text` among them. Setting
+    one in a profile did nothing, silently: the stripped-key warning goes to
+    stderr, which an MCP client never displays.
 
-# Full set of valid keys for unknown-key detection.
-# Anything not in this set will be stripped with a warning.
-_ALL_VALID_KEYS: frozenset[str] = KNOWN_KEYS | _PER_CALL_KEYS
+    For a server whose whole purpose is exposing crawl4ai, a frozen allowlist
+    is the wrong shape -- it can only ever fall further behind upstream. Reading
+    the signature cannot drift.
+    """
+    return frozenset(inspect.signature(CrawlerRunConfig.__init__).parameters) - {
+        "self",
+        "kwargs",
+    }
+
+
+# Params this module sets itself after the merge; a profile must not override them.
+_RESERVED_KEYS: frozenset[str] = frozenset({"verbose", "markdown_generator"})
+
+# Consumed by build_run_config and routed to the content filter, not passed
+# through to CrawlerRunConfig.
+_FILTER_KEYS: frozenset[str] = frozenset({"word_count_threshold"})
 
 
 class ProfileManager:
@@ -160,8 +150,9 @@ def build_run_config(
     # Three-layer merge: default <- named <- per-call (right wins)
     merged = {**default, **named, **per_call_overrides}
 
-    # Strip unknown keys (not valid for CrawlerRunConfig)
-    unknown = set(merged.keys()) - _ALL_VALID_KEYS - {"verbose"}
+    # Strip keys CrawlerRunConfig does not accept, checked against the live
+    # signature so this cannot fall behind upstream. See _valid_config_keys.
+    unknown = set(merged) - _valid_config_keys() - _FILTER_KEYS
     if unknown:
         logger.warning(
             "Stripping unknown profile keys %s — not valid CrawlerRunConfig kwargs",
@@ -205,3 +196,17 @@ def build_run_config(
     )
 
     return CrawlerRunConfig(**merged)
+
+
+def effective_profile_keys(settings: dict) -> tuple[dict, dict]:
+    """Split a raw profile dict into (applied, ignored).
+
+    list_profiles used to print the raw YAML, so a key that build_run_config
+    strips on the very next line was shown to the agent as an active setting.
+    The tool that exists to say what a profile does was reporting settings that
+    do not apply.
+    """
+    valid = _valid_config_keys() | _FILTER_KEYS
+    applied = {k: v for k, v in settings.items() if k in valid}
+    ignored = {k: v for k, v in settings.items() if k not in valid}
+    return applied, ignored

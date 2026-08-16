@@ -14,7 +14,6 @@ Each test below pins one property that a caller depends on:
 
 from unittest.mock import MagicMock
 
-from crawl4ai_mcp.profiles import _PER_CALL_KEYS
 from crawl4ai_mcp.server import CrawlBatchResult, _batch_result, mcp
 
 
@@ -170,6 +169,10 @@ class TestBatchResultDepthMetadata:
 
 
 class TestPerCallKeys:
-    def test_deep_crawl_strategy_in_per_call_keys(self) -> None:
-        """deep_crawl_strategy is in _PER_CALL_KEYS so it passes through build_run_config."""
-        assert "deep_crawl_strategy" in _PER_CALL_KEYS
+    def test_deep_crawl_strategy_reaches_the_run_config(self) -> None:
+        """deep_crawl is a no-op if this key does not survive the merge."""
+        from crawl4ai_mcp.profiles import ProfileManager, build_run_config
+
+        sentinel = object()
+        cfg = build_run_config(ProfileManager(), None, deep_crawl_strategy=sentinel)
+        assert cfg.deep_crawl_strategy is sentinel

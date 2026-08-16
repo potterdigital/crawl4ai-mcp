@@ -1,6 +1,8 @@
 # src/crawl4ai_mcp/server.py
 import asyncio
+import contextvars
 import gzip
+import hashlib
 import importlib.metadata
 import json
 import logging
@@ -48,7 +50,11 @@ from mcp.types import ToolAnnotations
 from packaging.version import Version
 from pydantic import BaseModel
 
-from crawl4ai_mcp.profiles import ProfileManager, build_run_config
+from crawl4ai_mcp.profiles import (
+    ProfileManager,
+    build_run_config,
+    effective_profile_keys,
+)
 
 
 AUTO_REPAIR_ENV = "CRAWL4AI_MCP_AUTO_REPAIR"
@@ -155,14 +161,18 @@ def _install_browser() -> tuple[bool, str]:
 
 def _build_browser_config() -> BrowserConfig:
     """Browser settings shared by initial startup and any later repair."""
+    # No extra_args: crawl4ai's BrowserManager already hardcodes --disable-gpu,
+    # --disable-dev-shm-usage and --no-sandbox, and dedupes. Verified the launch
+    # arg list is identical with and without them, so passing them was inert.
+    #
+    # Worth keeping out rather than keeping "just in case": crawl4ai's managed
+    # browser path drops --disable-gpu deliberately when stealth is enabled,
+    # because disabling the GPU kills WebGL and anti-bot sensors read that as
+    # headless. Re-adding it here would silently undo that if stealth is ever
+    # turned on.
     return BrowserConfig(
         headless=True,
         verbose=False,  # CRITICAL: verbose=True outputs to stdout, corrupting MCP transport
-        extra_args=[
-            "--disable-gpu",
-            "--disable-dev-shm-usage",
-            "--no-sandbox",
-        ],
     )
 
 
@@ -171,6 +181,9 @@ async def _start_crawler() -> tuple[AsyncWebCrawler | None, str]:
     crawler = AsyncWebCrawler(config=_build_browser_config())
     try:
         await crawler.start()
+        # Installed once, for the crawler's lifetime. They read per-call data
+        # from a ContextVar, so they must never be set or cleared per call.
+        _install_override_hooks(crawler)
         return crawler, ""
     except Exception as e:
         try:
@@ -563,15 +576,33 @@ def _batch_result(results: list, note: str | None = None) -> CrawlBatchResult:
 
 
 def _sanitize_filename(url: str) -> str:
-    """Convert a URL to a safe filename stem (no extension).
+    """Convert a URL to a safe, collision-free filename stem (no extension).
 
-    Strips scheme, replaces non-alphanumeric chars with underscores,
-    collapses runs, and trims to 200 chars.
+    The readable part is lossy on purpose: scheme stripped, non-alphanumerics
+    collapsed to underscores, truncated. A hash of the FULL original URL is
+    appended so that lossiness can never merge two pages into one file.
+
+    That suffix is load-bearing, not decoration. Without it the readable part
+    alone silently destroyed data in a batch, all of it reported as success:
+
+    - every non-Latin path collapsed to nothing, because the character class
+      is ASCII-only. Four distinct Chinese URLs all became "example_cn", so a
+      crawl of any Chinese, Japanese, Korean, Arabic or Cyrillic site wrote
+      every page over the same file and kept only the last one.
+    - "/docs/api" and "/docs/api/" produced the same stem.
+    - two URLs sharing their first 200 characters produced the same stem.
+    - "/Page" and "/page" differ as strings but are the same file on a
+      case-insensitive filesystem, which is the macOS default.
+
+    Hashing the URL before any lossy transform closes all four at once.
+    crawl4ai does the same thing in its own download path rather than
+    trusting a slug to be unique.
     """
     name = re.sub(r"^https?://", "", url)
     name = re.sub(r"[^a-zA-Z0-9]+", "_", name)
-    name = name.strip("_")[:200]
-    return name or "page"
+    name = name.strip("_")[:180] or "page"
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
+    return f"{name}_{digest}"
 
 
 def _persist_results(
@@ -824,6 +855,78 @@ async def _startup_version_check() -> None:
         pass  # Never disrupt server startup
 
 
+# Per-call header/cookie payload for the hooks below. A ContextVar is scoped to
+# the running task, so two overlapping tool calls each see their own value.
+#
+# This must NOT be plain state on the strategy. crawl4ai keeps one hook slot per
+# hook type on the strategy instance, and this server shares a single crawler
+# across every tool call, so writing a call's headers into that slot published
+# them to every other in-flight call: an overlapping crawl of a different host
+# received the first call's Authorization header, and whichever call finished
+# first cleared the slot out from under the other.
+_call_overrides: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "crawl4ai_call_overrides", default={}
+)
+
+
+async def _override_before_goto(page, context, url, config, **kwargs):
+    """Apply this task's headers. Installed once; a no-op when none are set."""
+    headers = _call_overrides.get().get("headers")
+    if headers:
+        await page.set_extra_http_headers(headers)
+
+
+async def _override_on_context(page, context, **kwargs):
+    """Apply this task's cookies. Installed once; a no-op when none are set."""
+    cookies = _call_overrides.get().get("cookies")
+    if cookies:
+        await context.add_cookies(cookies)
+
+
+def _install_override_hooks(crawler: AsyncWebCrawler) -> None:
+    """Install the override hooks once, at startup."""
+    crawler.crawler_strategy.set_hook("before_goto", _override_before_goto)
+    crawler.crawler_strategy.set_hook("on_page_context_created", _override_on_context)
+
+
+async def _clear_injected_cookies(crawler: AsyncWebCrawler, cookies: list) -> None:
+    """Remove cookies this call injected, so they do not outlive it.
+
+    add_cookies writes into the browser context, and crawl4ai caches and reuses
+    contexts. Closing the page does not close the context, so an injected
+    session cookie survived into every later crawl of the same domain: a call
+    that passed no cookies at all was still sending the previous call's
+    credentials, with no way to clear them short of restarting the server.
+    """
+    try:
+        manager = crawler.crawler_strategy.browser_manager
+    except AttributeError:  # pragma: no cover - upstream layout change
+        return
+
+    # crawl4ai caches a context per config signature and also keeps a default
+    # one. Which of them served this crawl depends on the config, so clear from
+    # every live context rather than guessing; clearing a cookie that was never
+    # there is a no-op.
+    contexts = []
+    default = getattr(manager, "default_context", None)
+    if default is not None:
+        contexts.append(default)
+    contexts.extend(getattr(manager, "contexts_by_config", {}).values())
+
+    for context in contexts:
+        clear = getattr(context, "clear_cookies", None)
+        if clear is None:  # pragma: no cover - a Browser, not a BrowserContext
+            continue
+        for cookie in cookies:
+            name = cookie.get("name") if isinstance(cookie, dict) else None
+            if not name:
+                continue
+            try:
+                await clear(name=name)
+            except Exception as exc:  # pragma: no cover - playwright drift
+                logger.warning("Could not clear injected cookie %r: %s", name, exc)
+
+
 async def _crawl_with_overrides(
     crawler: AsyncWebCrawler,
     url: str,
@@ -831,37 +934,25 @@ async def _crawl_with_overrides(
     headers: dict | None = None,
     cookies: list | None = None,
 ):
-    """Run arun with per-request header and cookie injection via Playwright hooks.
+    """Run arun with per-request header and cookie injection.
 
-    CrawlerRunConfig in crawl4ai 0.8.0 has no headers or cookies parameters
-    (those are BrowserConfig-level and thus global). This helper injects them
-    per-request via Playwright strategy hooks immediately before arun(), then
-    clears the hooks in a finally block — even if arun() raises — to prevent
-    hook leakage into subsequent tool calls.
+    CrawlerRunConfig still has no headers or cookies parameters in crawl4ai
+    0.9.2 (verified against the installed signature; they exist only on
+    BrowserConfig, which is global), so per-request injection still has to go
+    through Playwright hooks. What changed is where the per-call data lives:
+    in a ContextVar keyed to this task rather than in a slot on the shared
+    strategy. See _call_overrides.
+
+    Injected cookies are cleared afterwards unless the call is part of a named
+    session, where persisting them across calls is the entire point.
     """
-    strategy = crawler.crawler_strategy
-
-    if headers:
-
-        async def before_goto(page, context, url, config, **kwargs):
-            await page.set_extra_http_headers(headers)
-
-        strategy.set_hook("before_goto", before_goto)
-
-    if cookies:
-
-        async def on_page_context_created(page, context, **kwargs):
-            await context.add_cookies(cookies)
-
-        strategy.set_hook("on_page_context_created", on_page_context_created)
-
+    token = _call_overrides.set({"headers": headers, "cookies": cookies})
     try:
         return await crawler.arun(url=url, config=config)
     finally:
-        if headers:
-            strategy.set_hook("before_goto", None)
-        if cookies:
-            strategy.set_hook("on_page_context_created", None)
+        _call_overrides.reset(token)
+        if cookies and not getattr(config, "session_id", None):
+            await _clear_injected_cookies(crawler, cookies)
 
 
 # Seconds between heartbeats for work that reports no per-item progress.
@@ -1065,8 +1156,18 @@ async def list_profiles(ctx: Context[AppContext]) -> str:
         if not cfg:
             lines.append("  (no settings — inherits all defaults)")
         else:
-            for k, v in sorted(cfg.items()):
+            # Show what actually applies. This used to print the raw YAML, so a
+            # key that build_run_config strips on the next line was reported to
+            # the caller as an active setting -- the tool that exists to say
+            # what a profile does was describing settings that do nothing.
+            applied, ignored = effective_profile_keys(cfg)
+            for k, v in sorted(applied.items()):
                 lines.append(f"  {k}: {v}")
+            if ignored:
+                lines.append(
+                    "  IGNORED (not valid crawl4ai settings, these have no effect): "
+                    + ", ".join(sorted(ignored))
+                )
         lines.append("")  # blank line between profiles
 
     return "\n".join(lines).rstrip()
@@ -1837,6 +1938,7 @@ async def deep_crawl(
     scope: str = "same-domain",
     include_pattern: str | None = None,
     exclude_pattern: str | None = None,
+    max_concurrent: int = 5,
     delay: float = 0,
     output_dir: str | None = None,
     profile: str | None = None,
@@ -1885,8 +1987,21 @@ async def deep_crawl(
             "/internal/*" to skip internal links). URLs matching this pattern
             will not be crawled.
 
+        max_concurrent: Maximum pages fetched simultaneously (default 5,
+            crawl4ai's own default for a deep crawl). Unlike crawl_many, a
+            deep crawl cannot use a custom dispatcher — crawl4ai's deep-crawl
+            strategy takes none — so this sets semaphore_count on the run
+            config, which is what its internal dispatcher reads.
+
         delay: Politeness delay in seconds between page fetches (default 0 —
-            no delay). Passed as delay_before_return_html to crawl4ai.
+            no delay). Sets mean_delay, the inter-request pacing crawl4ai's
+            internal dispatcher applies at every BFS level.
+
+            Note: a deep crawl is dispatched by crawl4ai's MemoryAdaptiveDispatcher,
+            which crawl_many and crawl_sitemap deliberately avoid because it
+            pauses dispatch above a system-memory threshold. There is no way to
+            substitute a dispatcher here, so a deep crawl on a memory-pressured
+            machine can stall where a flat batch crawl would not.
 
         output_dir: Directory to write per-page .md files and a manifest.json.
             When set, returns a metadata summary (file paths) instead of page
@@ -1960,8 +2075,21 @@ async def deep_crawl(
         "page_timeout": page_timeout * 1000,
         "deep_crawl_strategy": strategy,
     }
+    # Politeness for a deep crawl is set on the run config, NOT via a
+    # dispatcher. crawl4ai's DeepCrawlStrategy.arun() takes no dispatcher, and
+    # BFS internally calls arun_many() without one, so crawl4ai builds its own
+    # from mean_delay / max_range / semaphore_count on this config. Those three
+    # fields are the only pacing controls that reach a deep crawl.
+    #
+    # This used to set delay_before_return_html instead, which is a per-page
+    # "let JS settle" sleep that happens AFTER the page has already been
+    # fetched. So delay=5 waited 5s per page while still firing requests at
+    # crawl4ai's default ~0.1-0.4s cadence: the documented politeness delay hit
+    # the target site far harder than the caller asked for.
+    per_call_kwargs["semaphore_count"] = max_concurrent
     if delay > 0:
-        per_call_kwargs["delay_before_return_html"] = delay
+        per_call_kwargs["mean_delay"] = delay
+        per_call_kwargs["max_range"] = 0.0
     if css_selector is not None:
         per_call_kwargs["css_selector"] = css_selector
     if excluded_selector is not None:

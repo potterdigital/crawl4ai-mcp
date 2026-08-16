@@ -20,7 +20,12 @@ import pytest
 import yaml
 from crawl4ai import CrawlerRunConfig
 
-from crawl4ai_mcp.profiles import KNOWN_KEYS, ProfileManager, build_run_config
+from crawl4ai_mcp.profiles import (
+    ProfileManager,
+    _valid_config_keys,
+    build_run_config,
+    effective_profile_keys,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -356,23 +361,65 @@ class TestBuildRunConfigWordCountThreshold:
 
 
 # ---------------------------------------------------------------------------
-# KNOWN_KEYS
+# Valid-key detection
 # ---------------------------------------------------------------------------
 
 
-class TestKnownKeys:
-    def test_known_keys_is_a_set(self) -> None:
-        """KNOWN_KEYS is exported as a set."""
-        assert isinstance(KNOWN_KEYS, (set, frozenset))
+class TestValidConfigKeys:
+    """The allowlist this replaced was hand-written and could only fall behind.
 
-    def test_known_keys_does_not_include_verbose(self) -> None:
-        """verbose is excluded from KNOWN_KEYS so it always triggers unknown-key warning."""
-        assert "verbose" not in KNOWN_KEYS
+    It named 20 keys against a class accepting 99, so 77 upstream parameters
+    were unreachable from a profile or a per-call override, and setting one
+    did nothing with the warning going to stderr where no MCP client shows it.
+    """
 
-    def test_known_keys_includes_expected_fields(self) -> None:
-        """KNOWN_KEYS includes the main profile-settable CrawlerRunConfig fields."""
-        expected = {
-            "wait_until", "page_timeout", "simulate_user",
-            "magic", "scan_full_page", "word_count_threshold",
+    def test_keys_are_read_from_the_live_class(self) -> None:
+        """A hardcoded list drifts on every crawl4ai release; a signature cannot."""
+        import inspect
+
+        from crawl4ai import CrawlerRunConfig
+
+        real = set(inspect.signature(CrawlerRunConfig.__init__).parameters) - {
+            "self",
+            "kwargs",
         }
-        assert expected.issubset(KNOWN_KEYS)
+        assert _valid_config_keys() == real
+
+    def test_previously_unreachable_params_now_apply(self) -> None:
+        """Each of these was silently dropped before. They are ordinary things
+        to want from a crawler, which is why the drift mattered."""
+        pm = ProfileManager()
+        cfg = build_run_config(
+            pm,
+            None,
+            excluded_tags=["nav", "footer"],
+            exclude_external_links=True,
+            check_robots_txt=True,
+            only_text=True,
+        )
+        assert cfg.excluded_tags == ["nav", "footer"]
+        assert cfg.exclude_external_links is True
+        assert cfg.check_robots_txt is True
+        assert cfg.only_text is True
+
+    def test_a_genuinely_invalid_key_is_still_stripped(self) -> None:
+        """Widening the allowlist must not mean passing junk to the constructor."""
+        pm = ProfileManager()
+        cfg = build_run_config(pm, None, definitely_not_a_real_param=1)
+        assert not hasattr(cfg, "definitely_not_a_real_param")
+
+    def test_verbose_is_forced_false_whatever_a_profile_says(self) -> None:
+        """verbose=True writes to stdout and corrupts the MCP transport."""
+        pm = ProfileManager()
+        assert build_run_config(pm, None, verbose=True).verbose is False
+
+
+class TestEffectiveProfileKeys:
+    def test_splits_applied_from_ignored(self) -> None:
+        """list_profiles printed raw YAML, so a key build_run_config strips was
+        shown to the agent as an active setting."""
+        applied, ignored = effective_profile_keys(
+            {"page_timeout": 60000, "word_count_threshold": 10, "not_a_real_key": True}
+        )
+        assert set(applied) == {"page_timeout", "word_count_threshold"}
+        assert set(ignored) == {"not_a_real_key"}

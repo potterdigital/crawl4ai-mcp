@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2.1.0] - 2026-08-16
 
+### Security
+
+- **Per-call credentials no longer escape the call that supplied them.** Two leaks, both demonstrated against a live local server that logged what it actually received.
+
+  **Cookies outlived their call.** Injected cookies are written into a browser context that crawl4ai caches and reuses, and closing the page does not close the context. A crawl that supplied a session cookie therefore authenticated every later crawl of that domain. Observed: one call fetched `/private` with `session_token=SUPER-SECRET`, the next fetched `/public` passing no cookies at all, and the server still received `session_token=SUPER-SECRET`. There was no way to clear it short of restarting the server. Injected cookies are now cleared from every live context when the call ends, including when it raises. Cookies supplied to a named session are deliberately kept, since persisting them across calls is what a session is for.
+
+  **Headers crossed between concurrent calls.** crawl4ai keeps one hook slot per hook type on the crawler strategy, and this server shares a single crawler across all tool calls, so a call's headers were published to every other in-flight call. Observed: a request to one host carried a different host's bearer token, and whichever call finished first cleared the slot out from under the other. This was worst with the batch tools, where one `crawl_url` carrying an auth header overlapping a 20-URL batch would stamp that header on all 20 requests. Per-call header and cookie data now lives in a `contextvars.ContextVar` scoped to the running task, and the hooks are installed once at startup instead of being set and cleared per call.
+
+  Both leaks had the same root cause: per-call data written into state shared by a singleton.
+
 ### Fixed
 
 - **Sitemaps with any XML namespace now parse.** The parser pinned the `sitemaps.org/schemas/sitemap/0.9` namespace URI, so a sitemap declaring any other namespace (the older `google.com/schemas/sitemap/0.84` among them) matched nothing and was reported to the caller as an empty sitemap. Namespaces are now matched with a wildcard. Relative `<loc>` values are resolved against the sitemap's own URL instead of being returned unusable, and invisible characters (zero-width space, BOM) that survive `.strip()` and silently break a URL are removed. Sitemap-index children are fetched concurrently rather than one at a time, a real difference on indexes referencing hundreds of sub-sitemaps, and one failing child no longer discards its siblings. Index recursion is now depth-bounded and cycle-aware, so a sitemap index referencing itself terminates instead of recursing until the process dies.
