@@ -404,6 +404,59 @@ PROVIDER_ENV_VARS: dict[str, str | None] = {
 }
 
 
+DEFAULT_PAGE_TIMEOUT_S = 60
+
+_CACHE_MAP = {
+    "enabled": CacheMode.ENABLED,
+    "bypass": CacheMode.BYPASS,
+    "disabled": CacheMode.DISABLED,
+    "read_only": CacheMode.READ_ONLY,
+    "write_only": CacheMode.WRITE_ONLY,
+}
+
+# Crawling fresh is the default, and that is a deliberate reversal.
+#
+# crawl4ai's cache stores the RAW page and does not preserve the filtered
+# markdown, so reading from it silently discards every content control this
+# server exists to apply. Measured on one docs page with a BM25 query: the
+# first crawl returned 1,848 characters of the relevant sections, and an
+# identical second crawl served from cache returned 21,767 characters of the
+# whole page. The cached result also carries status_code=None, which this
+# server documents as meaning "no response was ever received".
+#
+# So under the old default of "enabled", crawling any page a second time
+# quietly returned different, twelve-times-larger, wrongly-labelled content.
+# Nothing in the response said so. Speed is not worth an answer that changes
+# depending on whether you happened to have visited the page before; callers
+# who want the cache can still ask for it by name.
+DEFAULT_CACHE_MODE = "bypass"
+
+
+def _bad_choice(param: str, value: object, valid: list[str]) -> str:
+    """The message every unrecognised enum value gets."""
+    return f"{param} {value!r} is not recognised. Valid values: {', '.join(sorted(valid))}."
+
+
+def _resolve_cache_mode(cache_mode: str | None) -> tuple[CacheMode, str | None]:
+    """Map the caller's cache_mode to crawl4ai's enum, or explain the refusal.
+
+    Returns (mode, error). An unrecognised value is REFUSED rather than quietly
+    downgraded to the default. The old behaviour logged a warning to stderr,
+    which an MCP client never sees, so `cache_mode="bypas"` silently ran with
+    caching on and the caller had no way to learn that the setting they asked
+    for was not the setting they got. Same reasoning as `selector_type` on
+    extract_css.
+    """
+    if cache_mode is None:
+        return _CACHE_MAP[DEFAULT_CACHE_MODE], None
+    key = cache_mode.strip().lower()
+    if key in _CACHE_MAP:
+        return _CACHE_MAP[key], None
+    return _CACHE_MAP[DEFAULT_CACHE_MODE], _bad_choice(
+        "cache_mode", cache_mode, list(_CACHE_MAP)
+    )
+
+
 def _one_line(text: object, limit: int = 200) -> str:
     """Collapse a value to a single truncated line fit for an error message.
 
@@ -550,14 +603,28 @@ def _extraction_error(extracted_content: str | None) -> str | None:
 def _check_api_key(provider: str) -> str | None:
     """Validate that the expected API key env var is set for the given provider.
 
-    Returns a structured error string if the key is missing, or None if the key
-    is present, the provider is local (e.g. ollama), or the provider is unknown
-    (let litellm handle unknown providers at call time).
+    Returns a structured error string if the key is missing or the provider is
+    not one this server knows, or None if the call is safe to attempt.
     """
     prefix = provider.split("/")[0].lower()
-    env_var = PROVIDER_ENV_VARS.get(prefix)
+    if prefix not in PROVIDER_ENV_VARS:
+        # An unknown prefix used to be waved through on the assumption that
+        # litellm would reject it. It does not: litellm treats an unrecognised
+        # provider as an OpenAI-compatible model name and sends the request to
+        # OPENAI. So `provider="gemin/gemini-2.5-flash"` billed OpenAI for a
+        # model nobody asked for, and the caller saw an OpenAIException naming a
+        # vendor they had not mentioned. A typo must not choose a vendor.
+        return (
+            f"Unknown provider {provider!r}\n"
+            f"Known providers: {', '.join(sorted(PROVIDER_ENV_VARS))}\n"
+            f"Use the form '<provider>/<model>', e.g. 'gemini/gemini-2.5-flash'. "
+            f"Unrecognised names are refused rather than attempted, because "
+            f"litellm would otherwise route them to OpenAI and bill that account."
+        )
+
+    env_var = PROVIDER_ENV_VARS[prefix]
     if env_var is None:
-        # Provider is local (ollama) or unknown — no env var to check
+        # Provider is local (ollama) — no env var to check
         return None
     if not os.environ.get(env_var):
         return (
@@ -864,6 +931,16 @@ def _sanitize_filename(url: str) -> str:
     return f"{name}_{digest}"
 
 
+def _output_dir_failed_note(output_dir: str, exc: OSError, note: str | None) -> str:
+    """Explain a failed write without discarding the crawl it belonged to."""
+    detail = (
+        f"Could not write to output_dir {output_dir!r} ({exc.strerror or exc}). "
+        f"The crawl itself succeeded, so the page content is returned inline "
+        f"below instead of being written to disk."
+    )
+    return f"{note} {detail}" if note else detail
+
+
 def _persist_results(
     results: list,
     output_dir: str,
@@ -881,42 +958,71 @@ def _persist_results(
     file to be written to; inventing a second on-disk format for the structured
     data would leave the caller parsing files to get what they just asked for.
     """
-    os.makedirs(output_dir, exist_ok=True)
+    # A disk failure must not destroy the crawl.
+    #
+    # This used to let OSError out of the tool, so an unwritable output_dir
+    # answered a successful crawl of N pages with
+    # "Error executing tool crawl_many: [Errno 13] Permission denied".
+    # The network work was already done and every page was in hand; a
+    # permissions problem on one directory threw all of it away, and the
+    # caller could not even see which pages had succeeded. It also broke this
+    # server's own rule that tools never raise for an expected failure, and a
+    # directory you cannot write to is an expected failure.
+    #
+    # The content now comes back inline instead, which is exactly what the
+    # caller would have got had they not asked for output_dir at all.
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except OSError as exc:
+        return _batch_result(
+            results,
+            note=_output_dir_failed_note(output_dir, exc, note),
+            include_links=include_links,
+            include_tables=include_tables,
+        )
 
     successes = [r for r in results if r.success]
     failures = [r for r in results if not r.success]
     manifest_entries: list[dict] = []
 
-    for result in successes:
-        stem = _sanitize_filename(result.url)
-        filename = f"{stem}.md"
-        filepath = os.path.join(output_dir, filename)
+    try:
+        for result in successes:
+            stem = _sanitize_filename(result.url)
+            filename = f"{stem}.md"
+            filepath = os.path.join(output_dir, filename)
 
-        md = result.markdown
-        content = (md.fit_markdown or md.raw_markdown) if md else ""
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
+            md = result.markdown
+            content = (md.fit_markdown or md.raw_markdown) if md else ""
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
 
-        entry: dict = {"url": result.url, "file": filename, "success": True}
-        if result.metadata and isinstance(result.metadata, dict):
-            if "depth" in result.metadata:
-                entry["depth"] = result.metadata["depth"]
-            if "parent_url" in result.metadata:
-                entry["parent_url"] = result.metadata["parent_url"]
-        manifest_entries.append(entry)
+            entry: dict = {"url": result.url, "file": filename, "success": True}
+            if result.metadata and isinstance(result.metadata, dict):
+                if "depth" in result.metadata:
+                    entry["depth"] = result.metadata["depth"]
+                if "parent_url" in result.metadata:
+                    entry["parent_url"] = result.metadata["parent_url"]
+            manifest_entries.append(entry)
 
-    for result in failures:
-        manifest_entries.append(
-            {
-                "url": result.url,
-                "success": False,
-                "error": result.error_message,
-            }
+        for result in failures:
+            manifest_entries.append(
+                {
+                    "url": result.url,
+                    "success": False,
+                    "error": result.error_message,
+                }
+            )
+
+        manifest_path = os.path.join(output_dir, "manifest.json")
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest_entries, f, indent=2)
+    except OSError as exc:
+        return _batch_result(
+            results,
+            note=_output_dir_failed_note(output_dir, exc, note),
+            include_links=include_links,
+            include_tables=include_tables,
         )
-
-    manifest_path = os.path.join(output_dir, "manifest.json")
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest_entries, f, indent=2)
 
     # Same shape as an inline crawl, but pointing at files instead of carrying
     # content. include_content=False is what leaves markdown None.
@@ -966,6 +1072,40 @@ def _clean_loc(text: str | None, base_url: str) -> str | None:
     return urljoin(base_url, cleaned)
 
 
+# The two bytes every gzip stream starts with. Checking these is what makes
+# decompression depend on what actually arrived rather than on the URL.
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _maybe_gunzip(content: bytes) -> bytes:
+    """Decompress only if the bytes really are gzip, whatever the URL said.
+
+    This used to key off `sitemap_url.endswith(".gz")`, which is a claim about
+    the request rather than the response, and the two disagree in both
+    directions:
+
+    - httpx transparently decodes `Content-Encoding: gzip`, so a server that
+      sets that header on a .gz path hands us PLAIN bytes at a .gz URL.
+      `gzip.decompress` then raised `BadGzipFile: Not a gzipped file (b'<?')`,
+      which no caller caught, so the whole tool crashed on a sitemap that was
+      perfectly valid. Same crash when a .gz URL redirects to plain XML.
+    - A .xml URL that redirects to genuinely gzipped content was never
+      decompressed at all, and the caller was told it "is not valid sitemap
+      XML" -- pointing at the sitemap, when the sitemap was fine.
+
+    Both disappear once the bytes decide. A decompression that still fails is
+    returned as-is so the XML parser can produce the error the caller can act
+    on, rather than a gzip error about a file they never said was gzipped.
+    """
+    if not content.startswith(_GZIP_MAGIC):
+        return content
+    try:
+        return gzip.decompress(content)
+    except (OSError, EOFError) as exc:  # BadGzipFile is an OSError subclass
+        logger.warning("Sitemap looked gzipped but would not decompress: %s", exc)
+        return content
+
+
 async def _fetch_sitemap_urls(
     sitemap_url: str, _depth: int = 0, _seen: set[str] | None = None
 ) -> list[str]:
@@ -989,9 +1129,7 @@ async def _fetch_sitemap_urls(
         resp = await client.get(sitemap_url)
         resp.raise_for_status()
 
-    content = resp.content
-    if sitemap_url.endswith(".gz"):
-        content = gzip.decompress(content)
+    content = _maybe_gunzip(resp.content)
 
     root = ET.fromstring(content)
     # Resolve relative <loc> against the final URL after redirects, not the one
@@ -1197,11 +1335,27 @@ async def _clear_injected_cookies(crawler: AsyncWebCrawler, cookies: list) -> No
         if clear is None:  # pragma: no cover - a Browser, not a BrowserContext
             continue
         for cookie in cookies:
-            name = cookie.get("name") if isinstance(cookie, dict) else None
+            if not isinstance(cookie, dict):
+                continue
+            name = cookie.get("name")
             if not name:
                 continue
+            # Scope the clear to the cookie we actually injected.
+            #
+            # This used to call clear(name=name) with no domain, which clears
+            # that name in EVERY context. Cookie names are not unique to a
+            # caller -- "session", "sid", "auth_token" and "session_token" are
+            # exactly what everyone reaches for -- so one call's cleanup would
+            # silently delete a live session's identically-named cookie and
+            # de-authenticate a workflow midway through. Narrowing by domain
+            # and path means cleanup only removes what this call put there.
+            criteria: dict = {"name": name}
+            if cookie.get("domain"):
+                criteria["domain"] = cookie["domain"]
+            if cookie.get("path"):
+                criteria["path"] = cookie["path"]
             try:
-                await clear(name=name)
+                await clear(**criteria)
             except Exception as exc:  # pragma: no cover - playwright drift
                 logger.warning("Could not clear injected cookie %r: %s", name, exc)
 
@@ -1510,7 +1664,7 @@ async def crawl_url(
     profile: str | None = None,
     session_id: str | None = None,
     query: str | None = None,
-    cache_mode: str = "enabled",
+    cache_mode: str | None = None,
     css_selector: str | None = None,
     target_elements: list[str] | None = None,
     excluded_selector: str | None = None,
@@ -1519,8 +1673,8 @@ async def crawl_url(
     user_agent: str | None = None,
     headers: dict | None = None,
     cookies: list | None = None,
-    page_timeout: int = 60,
-    word_count_threshold: int = 10,
+    page_timeout: int | None = None,
+    word_count_threshold: int | None = None,
     ctx: Context[AppContext] = None,
 ) -> str:
     """Crawl a URL and return clean, filtered markdown content.
@@ -1545,6 +1699,13 @@ async def crawl_url(
             session_id creates the session automatically. Use create_session to
             set up a session with initial cookies before crawling. Sessions have
             a 30-minute inactivity TTL.
+
+        query: Filter the page to the parts relevant to this question, before
+            any tokens are spent. Swaps the default density-based pruning for
+            crawl4ai's BM25 scoring, which ranks each block against the query.
+            Measured on a docs page: 9,278 characters became 2,165, and the
+            retained text was the sections that answered the question. No LLM
+            and no cost. Leave unset to keep the density filter.
 
         cache_mode: Controls crawl4ai's cache read/write behaviour.
             - "enabled"    — use cache if available, fetch and store on miss (default)
@@ -1599,14 +1760,48 @@ async def crawl_url(
             when every crawl in a run wants the same agent; do not rely on it to
             vary per call. Example: "Mozilla/5.0 (compatible; MyBot/1.0)"
 
-        headers: Dict of custom HTTP headers to send with the request. Applied via
-            Playwright page hooks; cleared after the request to avoid leaking into
-            subsequent calls. Example: {"Authorization": "Bearer token", "X-Custom": "val"}
+        headers: Dict of custom HTTP headers to send with the request. Applied
+            via Playwright page hooks, which are page-scoped, so a header does
+            not reach any other call.
+
+            EXCEPT inside a session: a session reuses one page across calls, so
+            a header set on the first call of a session keeps being sent on
+            every later call of that same session. It does not escape to
+            non-session calls. Pass headers per call if that is not what you
+            want.
+            Example: {"Authorization": "Bearer token", "X-Custom": "val"}
 
         cookies: List of cookie dicts to send with the request. Each cookie must
             have at minimum: name, value, domain. Optional fields: path, expires,
             httpOnly, secure, sameSite.
             Example: [{"name": "session", "value": "abc123", "domain": "example.com"}]
+
+            SECURITY, please read before sending a real credential. Cookies are
+            not confined to the call that supplied them the way headers are.
+            Playwright stores cookies on the browser CONTEXT, and crawl4ai keeps
+            one shared context per browser configuration, so an injected cookie
+            is visible to any other crawl using that context while it is there.
+            Concretely, all of these are true today and are not bugs this server
+            can fix, because crawl4ai 0.9.2 offers no per-call or per-session
+            cookie storage:
+
+            - Cookies passed WITHOUT session_id are cleared when the call ends,
+              so the exposure lasts only as long as the call. A crawl running
+              concurrently with it can still see them.
+            - Cookies passed WITH session_id are deliberately kept, since that
+              is what a session is for. They stay in the shared jar for the life
+              of the session (30-minute idle TTL) and are therefore sent on
+              other crawls of the same domain, including crawls that pass no
+              cookies and no session_id at all.
+            - Two named sessions share that jar, so a credential in one session
+              is sent on the other session's requests to that domain.
+
+            Cookies do stay scoped to their own domain, so this is a same-domain
+            exposure, not one host's credential reaching another host.
+            destroy_session clears a session's cookies immediately and is the
+            way to end the exposure early. If you need two identities against
+            one site kept genuinely apart, run them through separate server
+            processes rather than separate sessions.
 
         page_timeout: Maximum seconds to wait for the page to load before timing
             out (default 60). Converted to milliseconds internally.
@@ -1615,26 +1810,18 @@ async def crawl_url(
             PruningContentFilter (default 10). Lower values retain more short
             blocks; higher values prune more aggressively.
     """
-    _CACHE_MAP = {
-        "enabled": CacheMode.ENABLED,
-        "bypass": CacheMode.BYPASS,
-        "disabled": CacheMode.DISABLED,
-        "read_only": CacheMode.READ_ONLY,
-        "write_only": CacheMode.WRITE_ONLY,
-    }
-    resolved_cache = _CACHE_MAP.get(cache_mode, CacheMode.ENABLED)
-    if cache_mode not in _CACHE_MAP:
-        logger.warning("Unknown cache_mode %r — defaulting to 'enabled'", cache_mode)
+    resolved_cache, cache_error = _resolve_cache_mode(cache_mode)
+    if cache_error:
+        return cache_error
 
     logger.info("crawl_url: %s (cache=%s, profile=%s)", url, cache_mode, profile)
 
     # Build per-call kwargs — only include optional params when explicitly set
     # so that profile values are not silently overridden by None/default sentinel values.
     # Convert page_timeout from seconds (tool interface) to ms (CrawlerRunConfig native unit).
-    per_call_kwargs: dict = {
-        "cache_mode": resolved_cache,
-        "page_timeout": page_timeout * 1000,
-    }
+    per_call_kwargs: dict = {"cache_mode": resolved_cache}
+    if page_timeout is not None:
+        per_call_kwargs["page_timeout"] = page_timeout * 1000
     if css_selector is not None:
         per_call_kwargs["css_selector"] = css_selector
     if target_elements is not None:
@@ -1649,7 +1836,7 @@ async def crawl_url(
         per_call_kwargs["user_agent"] = user_agent
     if session_id is not None:
         per_call_kwargs["session_id"] = session_id
-    if word_count_threshold != 10:
+    if word_count_threshold is not None:
         per_call_kwargs["word_count_threshold"] = word_count_threshold
     if query is not None:
         per_call_kwargs["query"] = query
@@ -1661,12 +1848,20 @@ async def crawl_url(
         _require_crawler(app), url, run_cfg, headers, cookies
     )
 
-    if not result.success:
-        return _format_crawl_error(url, result)
-
-    # Track session if session_id was provided and crawl succeeded
+    # Register the session on ANY outcome, not just success.
+    #
+    # crawl4ai registers the session in its own browser_manager during page
+    # setup, before navigation, so a failed crawl still leaves a live session
+    # holding whatever cookies were injected. Registering only on success left
+    # that session invisible to list_sessions and unreachable by
+    # destroy_session: the caller could see neither that it existed nor any way
+    # to tear it down, and destroy_session is the only thing that clears a
+    # session's cookies.
     if session_id and session_id not in app.sessions:
         app.sessions[session_id] = time.time()
+
+    if not result.success:
+        return _format_crawl_error(url, result)
 
     md = result.markdown
     content = (md.fit_markdown or md.raw_markdown) if md else ""
@@ -1696,6 +1891,15 @@ async def create_session(
 
     Sessions have a 30-minute inactivity TTL — each crawl_url call with the
     session_id resets the timer.
+
+    A session is NOT a security boundary. crawl4ai 0.9.2 gives sessions no
+    private cookie storage: every session shares the browser context's one
+    cookie jar, so a credential held by this session is also sent on other
+    crawls of the same domain, including crawls that name a different session
+    or no session at all. It stays domain-scoped, so it does not reach other
+    hosts, and destroy_session clears it immediately. To keep two identities
+    on one site genuinely apart, use separate server processes. See the
+    `cookies` note on crawl_url for the full detail.
 
     Args:
         session_id: Name for the session. If not provided, a UUID is generated.
@@ -1742,20 +1946,28 @@ async def create_session(
         content = (md.fit_markdown or md.raw_markdown) if md else ""
         return f"Session created: {sid}\n\nInitial page content:\n{content}"
     else:
-        # Create session page without navigating
-        if cookies:
-            # Need to do a minimal crawl to inject cookies via hooks
-            config = build_run_config(
-                app.profile_manager,
-                None,
-                session_id=sid,
-                cache_mode=CacheMode.BYPASS,
-            )
-            # Use about:blank as a no-op navigation target for cookie injection
-            await _crawl_with_overrides(
-                _require_crawler(app), "about:blank", config, None, cookies
-            )
+        # Cookies cannot be injected without a real page to inject them into.
+        #
+        # This used to crawl "about:blank" to fire the cookie hook. crawl4ai
+        # rejects that URL outright ("URL must start with 'http://', 'https://',
+        # file:// or raw:"), the hook never ran, and the failed result was
+        # discarded without checking success -- so the tool reported "Session
+        # created" while silently dropping every cookie it was handed. The
+        # caller then made authenticated calls that carried no credential and
+        # got an unexplained login page back.
+        #
+        # Refusing is the honest answer: the cookies genuinely cannot be
+        # applied here, and saying so points at the one-line fix.
         app.sessions[sid] = time.time()
+        if cookies:
+            return (
+                f"Session created: {sid}\n\n"
+                f"WARNING: the {len(cookies)} cookie(s) you passed were NOT applied. "
+                f"Cookies can only be injected during a real page load, so pass "
+                f"`url` to create_session (any page on the target domain will do), "
+                f"or pass the cookies to your first crawl_url call with this "
+                f"session_id."
+            )
         return f"Session created: {sid}"
 
 
@@ -1872,15 +2084,15 @@ async def crawl_many(
     include_tables: bool = False,
     profile: str | None = None,
     query: str | None = None,
-    cache_mode: str = "enabled",
+    cache_mode: str | None = None,
     css_selector: str | None = None,
     target_elements: list[str] | None = None,
     excluded_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
     user_agent: str | None = None,
-    page_timeout: int = 60,
-    word_count_threshold: int = 10,
+    page_timeout: int | None = None,
+    word_count_threshold: int | None = None,
     ctx: Context[AppContext] = None,
 ) -> CrawlBatchResult:
     """Crawl multiple URLs concurrently and return all results.
@@ -1934,6 +2146,13 @@ async def crawl_many(
             Per-call parameters take precedence over profile values.
             Use list_profiles to see available profiles.
 
+        query: Filter the page to the parts relevant to this question, before
+            any tokens are spent. Swaps the default density-based pruning for
+            crawl4ai's BM25 scoring, which ranks each block against the query.
+            Measured on a docs page: 9,278 characters became 2,165, and the
+            retained text was the sections that answered the question. No LLM
+            and no cost. Leave unset to keep the density filter.
+
         cache_mode: Controls crawl4ai's cache read/write behaviour.
             - "enabled"    — use cache if available, fetch and store on miss (default)
             - "bypass"     — always fetch fresh; do not read or write cache
@@ -1962,23 +2181,20 @@ async def crawl_many(
         js_code: JavaScript to execute in each page after load and before
             extraction. Applied to ALL URLs in the batch.
 
-        user_agent: Override the browser User-Agent string for all requests.
+        user_agent: Override the browser User-Agent string. Not reliably
+            per-call: crawl4ai applies it by mutating the shared browser config
+            and browser contexts are cached, so the FIRST agent used for a
+            context wins for that context's lifetime. Later calls passing a
+            different one are ignored, and calls passing none inherit it.
 
         page_timeout: Maximum seconds to wait for each page to load (default 60).
 
         word_count_threshold: Minimum word count for a content block to survive
             PruningContentFilter (default 10).
     """
-    _CACHE_MAP = {
-        "enabled": CacheMode.ENABLED,
-        "bypass": CacheMode.BYPASS,
-        "disabled": CacheMode.DISABLED,
-        "read_only": CacheMode.READ_ONLY,
-        "write_only": CacheMode.WRITE_ONLY,
-    }
-    resolved_cache = _CACHE_MAP.get(cache_mode, CacheMode.ENABLED)
-    if cache_mode not in _CACHE_MAP:
-        logger.warning("Unknown cache_mode %r — defaulting to 'enabled'", cache_mode)
+    resolved_cache, cache_error = _resolve_cache_mode(cache_mode)
+    if cache_error:
+        return CrawlBatchResult(crawled=0, total=0, pages=[], error=cache_error)
 
     logger.info(
         "crawl_many: %d URLs (max_concurrent=%d, delay=%.1f, profile=%s)",
@@ -1989,10 +2205,9 @@ async def crawl_many(
     )
 
     # Build per-call kwargs — only include optional params when explicitly set
-    per_call_kwargs: dict = {
-        "cache_mode": resolved_cache,
-        "page_timeout": page_timeout * 1000,
-    }
+    per_call_kwargs: dict = {"cache_mode": resolved_cache}
+    if page_timeout is not None:
+        per_call_kwargs["page_timeout"] = page_timeout * 1000
     if css_selector is not None:
         per_call_kwargs["css_selector"] = css_selector
     if target_elements is not None:
@@ -2005,7 +2220,7 @@ async def crawl_many(
         per_call_kwargs["js_code"] = js_code
     if user_agent is not None:
         per_call_kwargs["user_agent"] = user_agent
-    if word_count_threshold != 10:
+    if word_count_threshold is not None:
         per_call_kwargs["word_count_threshold"] = word_count_threshold
     if query is not None:
         per_call_kwargs["query"] = query
@@ -2066,7 +2281,7 @@ async def extract_structured(
     css_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
-    page_timeout: int = 60,
+    page_timeout: int | None = None,
     ctx: Context[AppContext] = None,
 ) -> str:
     """Extract structured JSON from a page using an LLM.
@@ -2140,7 +2355,7 @@ async def extract_structured(
     # extraction tools don't need markdown_generator or profile merging.
     run_cfg = CrawlerRunConfig(
         extraction_strategy=strategy,
-        page_timeout=page_timeout * 1000,
+        page_timeout=(page_timeout or DEFAULT_PAGE_TIMEOUT_S) * 1000,
         verbose=False,  # CRITICAL: protect MCP transport
     )
     if css_selector is not None:
@@ -2156,12 +2371,21 @@ async def extract_structured(
     if not result.success:
         return _format_crawl_error(url, result)
 
-    if not result.extracted_content:
+    # `"[]"` is a truthy string, so testing `not extracted_content` alone let an
+    # empty extraction through as a success: a css_selector that matched nothing
+    # returned the literal "[]" plus a token-usage footer, and the caller was
+    # billed for a call that found nothing and told nothing. extract_css has
+    # always tested both; this is the same test.
+    if not result.extracted_content or result.extracted_content.strip() in (
+        "[]",
+        "{}",
+    ):
         return (
             f"Extraction returned no data\n"
             f"URL: {url}\n"
             f"The LLM did not produce structured output. "
-            f"Check that the schema matches the page content."
+            f"Check that the schema matches the page content, and that any "
+            f"css_selector you passed actually matches something on the page."
         )
 
     # crawl4ai does not raise when the LLM call fails; it puts the failure
@@ -2206,7 +2430,7 @@ async def extract_css(
     css_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
-    page_timeout: int = 60,
+    page_timeout: int | None = None,
     ctx: Context[AppContext] = None,
 ) -> ExtractionResult:
     """Extract structured JSON from a page using CSS or XPath selectors (no LLM, no cost).
@@ -2236,11 +2460,21 @@ async def extract_css(
             - "fields": List of field definitions, each with:
               - "name": Field name in output JSON
               - "selector": Selector relative to baseSelector. With
-                selector_type="xpath", start relative paths with "./" or ".//"
-                — a leading "//" searches the whole document again, not inside
-                the matched item.
+                selector_type="xpath", write relative paths as "./" or ".//".
+                A leading "//" does NOT escape to the whole document: crawl4ai
+                evaluates field selectors context-sensitively and silently
+                re-roots "//foo" to ".//foo". So "//title" inside an item
+                matches nothing rather than the page title, and there is no way
+                to reach outside the matched item from a field selector.
               - "type": One of "text", "attribute", "html", "regex",
-                "list", "nested", "nested_list"
+                "list", "nested", "nested_list". An unrecognised value is NOT
+                an error upstream: crawl4ai falls through and returns the
+                element's raw HTML as the field value, so a typo like "textt"
+                yields markup rather than text.
+              - "pattern": REQUIRED when type is "regex". Without it the field
+                returns the element's raw HTML.
+              - "group": Optional capture group for type "regex". Defaults to
+                1, not 0, so a pattern with no capture group needs "group": 0.
               - "attribute": Required when type is "attribute" (e.g. "href", "src")
               - "transform": Optional, e.g. "strip", "lowercase"
               - "default": Optional default value if selector matches nothing
@@ -2313,7 +2547,7 @@ async def extract_css(
     # extraction tools don't need markdown_generator or profile merging.
     run_cfg = CrawlerRunConfig(
         extraction_strategy=strategy,
-        page_timeout=page_timeout * 1000,
+        page_timeout=(page_timeout or DEFAULT_PAGE_TIMEOUT_S) * 1000,
         verbose=False,  # CRITICAL: protect MCP transport
     )
     if css_selector is not None:
@@ -2388,7 +2622,7 @@ async def extract_patterns(
     css_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
-    page_timeout: int = 60,
+    page_timeout: int | None = None,
     ctx: Context[AppContext] = None,
 ) -> ExtractionResult:
     """Pull common data types off a page with regex. No LLM, no cost, no schema.
@@ -2452,6 +2686,37 @@ async def extract_patterns(
             error="No patterns requested. Pass `patterns`, `custom_patterns`, or both.",
         )
 
+    # Validate the caller's regexes here rather than letting re.compile raise
+    # from inside crawl4ai. An invalid pattern is caller input, not a server
+    # fault, and it used to crash the whole tool call: the caller got
+    # "Error executing tool extract_patterns" with no structuredContent and no
+    # indication of WHICH pattern was bad. A typo in one of five regexes should
+    # name that regex, not take the request down.
+    if custom_patterns:
+        for name, pattern in custom_patterns.items():
+            if not isinstance(pattern, str):
+                return ExtractionResult(
+                    url=url,
+                    count=0,
+                    items=[],
+                    error=(
+                        f"custom_patterns[{name!r}] must be a regex string, got "
+                        f"{type(pattern).__name__}."
+                    ),
+                )
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                return ExtractionResult(
+                    url=url,
+                    count=0,
+                    items=[],
+                    error=(
+                        f"custom_patterns[{name!r}] is not a valid regular "
+                        f"expression: {exc}"
+                    ),
+                )
+
     logger.info("extract_patterns: %s (patterns=%s)", url, selected)
 
     # input_format="html", not crawl4ai's default of "fit_html". fit_html is the
@@ -2464,7 +2729,7 @@ async def extract_patterns(
     )
     run_cfg = CrawlerRunConfig(
         extraction_strategy=strategy,
-        page_timeout=page_timeout * 1000,
+        page_timeout=(page_timeout or DEFAULT_PAGE_TIMEOUT_S) * 1000,
         verbose=False,  # CRITICAL: protect MCP transport
     )
     if css_selector is not None:
@@ -2537,15 +2802,15 @@ async def deep_crawl(
     include_tables: bool = False,
     profile: str | None = None,
     query: str | None = None,
-    cache_mode: str = "enabled",
+    cache_mode: str | None = None,
     css_selector: str | None = None,
     target_elements: list[str] | None = None,
     excluded_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
     user_agent: str | None = None,
-    page_timeout: int = 60,
-    word_count_threshold: int = 10,
+    page_timeout: int | None = None,
+    word_count_threshold: int | None = None,
     ctx: Context[AppContext] = None,
 ) -> CrawlBatchResult:
     """Crawl a site by following links from a start URL using BFS (breadth-first search).
@@ -2642,6 +2907,8 @@ async def deep_crawl(
             tables crawl4ai scored as real data are included, so page-layout
             tables are already filtered out. Nothing is truncated when on.
 
+        query: Filter each page to the parts relevant to this question,
+            using BM25 scoring instead of the default density filter. Free.
         profile: Named crawl profile for per-page configuration.
         cache_mode: Cache behavior (same as crawl_url).
         css_selector: Restrict extraction to matching elements on each page.
@@ -2652,7 +2919,11 @@ async def deep_crawl(
         excluded_selector: Exclude matching elements from extraction.
         wait_for: Wait condition before extracting each page.
         js_code: JavaScript to execute on each page before extraction.
-        user_agent: Override User-Agent string.
+        user_agent: Override the browser User-Agent string. Not reliably
+            per-call: crawl4ai applies it by mutating the shared browser config
+            and browser contexts are cached, so the FIRST agent used for a
+            context wins for that context's lifetime. Later calls passing a
+            different one are ignored, and calls passing none inherit it.
         page_timeout: Page load timeout in seconds (default 60).
         word_count_threshold: Minimum word count for content blocks (default 10).
 
@@ -2660,16 +2931,9 @@ async def deep_crawl(
         Per-request headers and cookies are not supported for deep_crawl in v1.
         Use crawl_url for single pages that need custom headers or cookies.
     """
-    _CACHE_MAP = {
-        "enabled": CacheMode.ENABLED,
-        "bypass": CacheMode.BYPASS,
-        "disabled": CacheMode.DISABLED,
-        "read_only": CacheMode.READ_ONLY,
-        "write_only": CacheMode.WRITE_ONLY,
-    }
-    resolved_cache = _CACHE_MAP.get(cache_mode, CacheMode.ENABLED)
-    if cache_mode not in _CACHE_MAP:
-        logger.warning("Unknown cache_mode %r — defaulting to 'enabled'", cache_mode)
+    resolved_cache, cache_error = _resolve_cache_mode(cache_mode)
+    if cache_error:
+        return CrawlBatchResult(crawled=0, total=0, pages=[], error=cache_error)
 
     logger.info(
         "deep_crawl: %s (depth=%d, max_pages=%d, scope=%s, delay=%.1f)",
@@ -2709,8 +2973,15 @@ async def deep_crawl(
     elif scope == "any":
         include_external = True
     else:
-        logger.warning("Unknown scope %r — defaulting to 'same-domain'", scope)
-        include_external = False
+        # Refused, not defaulted. Silently treating an unrecognised scope as
+        # same-domain is the wrong way round: someone who typed "all" meaning
+        # "any" would get a quietly narrower crawl and no indication of it.
+        return CrawlBatchResult(
+            crawled=0,
+            total=0,
+            pages=[],
+            error=_bad_choice("scope", scope, ["same-domain", "same-origin", "any"]),
+        )
 
     # An allowlist has to widen the link pool before it can narrow it.
     #
@@ -2764,6 +3035,14 @@ async def deep_crawl(
     # reached before the pages the caller actually wanted. Scoring the frontier
     # by keyword relevance spends the same budget on the pages most likely to
     # matter, which is usually what an agent means by "crawl the docs for X".
+    if strategy not in ("bfs", "best-first"):
+        return CrawlBatchResult(
+            crawled=0,
+            total=0,
+            pages=[],
+            error=_bad_choice("strategy", strategy, ["bfs", "best-first"]),
+        )
+
     if strategy == "best-first":
         scorer = (
             KeywordRelevanceScorer(keywords=relevance_keywords)
@@ -2783,11 +3062,28 @@ async def deep_crawl(
             url_scorer=scorer,
         )
     else:
-        if strategy != "bfs":
-            logger.warning("Unknown strategy %r — defaulting to 'bfs'", strategy)
+        # +1 compensates an upstream off-by-one, and the truncation below is
+        # what makes that safe in both directions.
+        #
+        # BFSDeepCrawlStrategy._arun_stream increments its page counter, then
+        # `break`s when it hits max_pages -- BEFORE the `yield`. So the last
+        # page is fetched, counted, and thrown away. deep_crawl forces
+        # stream=True so it can report progress (a silent tool call gets
+        # aborted for idleness, which is why streaming is here at all), which
+        # means every BFS deep crawl returned one page fewer than asked, and
+        # max_pages=1 returned NOTHING.
+        #
+        # Measured, driving crawl4ai's own strategy directly:
+        #     stream=False   1->1  3->3  5->5
+        #     stream=True    1->0  3->2  5->4
+        #
+        # Asking for one extra and truncating our own results yields exactly
+        # max_pages whether or not upstream ever fixes this: while the bug
+        # exists we receive max_pages, and once it is fixed we receive
+        # max_pages+1 and drop the extra.
         crawl_strategy = BFSDeepCrawlStrategy(
             max_depth=max_depth,
-            max_pages=max_pages,
+            max_pages=max_pages + 1,
             include_external=include_external,
             filter_chain=filter_chain,
         )
@@ -2795,9 +3091,10 @@ async def deep_crawl(
     # Build per-call kwargs — only include optional params when explicitly set
     per_call_kwargs: dict = {
         "cache_mode": resolved_cache,
-        "page_timeout": page_timeout * 1000,
         "deep_crawl_strategy": crawl_strategy,
     }
+    if page_timeout is not None:
+        per_call_kwargs["page_timeout"] = page_timeout * 1000
     # Politeness for a deep crawl is set on the run config, NOT via a
     # dispatcher. crawl4ai's DeepCrawlStrategy.arun() takes no dispatcher, and
     # BFS internally calls arun_many() without one, so crawl4ai builds its own
@@ -2825,7 +3122,7 @@ async def deep_crawl(
         per_call_kwargs["js_code"] = js_code
     if user_agent is not None:
         per_call_kwargs["user_agent"] = user_agent
-    if word_count_threshold != 10:
+    if word_count_threshold is not None:
         per_call_kwargs["word_count_threshold"] = word_count_threshold
     if query is not None:
         per_call_kwargs["query"] = query
@@ -2846,6 +3143,12 @@ async def deep_crawl(
             (r.metadata or {}).get("depth", 0) if isinstance(r.metadata, dict) else 0
         )
     )
+    # Enforce the caller's cap ourselves. Sorting first means the pages kept are
+    # the shallowest ones, which is what breadth-first is for. See the +1 on the
+    # BFS strategy above: this is the half that stops it over-delivering if the
+    # upstream off-by-one is ever fixed.
+    if len(results) > max_pages:
+        results = results[:max_pages]
 
     if output_dir:
         return _persist_results(
@@ -2882,15 +3185,15 @@ async def crawl_sitemap(
     include_tables: bool = False,
     profile: str | None = None,
     query: str | None = None,
-    cache_mode: str = "enabled",
+    cache_mode: str | None = None,
     css_selector: str | None = None,
     target_elements: list[str] | None = None,
     excluded_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
     user_agent: str | None = None,
-    page_timeout: int = 60,
-    word_count_threshold: int = 10,
+    page_timeout: int | None = None,
+    word_count_threshold: int | None = None,
     ctx: Context[AppContext] = None,
 ) -> CrawlBatchResult:
     """Crawl all pages listed in an XML sitemap.
@@ -2937,6 +3240,8 @@ async def crawl_sitemap(
             tables crawl4ai scored as real data are included, so page-layout
             tables are already filtered out. Nothing is truncated when on.
 
+        query: Filter each page to the parts relevant to this question,
+            using BM25 scoring instead of the default density filter. Free.
         profile: Named crawl profile for per-page configuration.
         cache_mode: Cache behavior (same as crawl_url).
         css_selector: Restrict extraction to matching elements on each page.
@@ -2947,7 +3252,11 @@ async def crawl_sitemap(
         excluded_selector: Exclude matching elements from extraction.
         wait_for: Wait condition before extracting each page.
         js_code: JavaScript to execute on each page before extraction.
-        user_agent: Override User-Agent string.
+        user_agent: Override the browser User-Agent string. Not reliably
+            per-call: crawl4ai applies it by mutating the shared browser config
+            and browser contexts are cached, so the FIRST agent used for a
+            context wins for that context's lifetime. Later calls passing a
+            different one are ignored, and calls passing none inherit it.
         page_timeout: Page load timeout in seconds (default 60).
         word_count_threshold: Minimum word count for content blocks (default 10).
 
@@ -2955,16 +3264,9 @@ async def crawl_sitemap(
         Per-call headers and cookies are not supported for sitemap crawls.
         Use crawl_url for requests requiring custom headers or cookies.
     """
-    _CACHE_MAP = {
-        "enabled": CacheMode.ENABLED,
-        "bypass": CacheMode.BYPASS,
-        "disabled": CacheMode.DISABLED,
-        "read_only": CacheMode.READ_ONLY,
-        "write_only": CacheMode.WRITE_ONLY,
-    }
-    resolved_cache = _CACHE_MAP.get(cache_mode, CacheMode.ENABLED)
-    if cache_mode not in _CACHE_MAP:
-        logger.warning("Unknown cache_mode %r -- defaulting to 'enabled'", cache_mode)
+    resolved_cache, cache_error = _resolve_cache_mode(cache_mode)
+    if cache_error:
+        return CrawlBatchResult(crawled=0, total=0, pages=[], error=cache_error)
 
     logger.info(
         "crawl_sitemap: %s (max_urls=%d, max_concurrent=%d, delay=%.1f)",
@@ -3021,10 +3323,9 @@ async def crawl_sitemap(
         urls = urls[:max_urls]
 
     # Build per-call kwargs -- only include optional params when explicitly set
-    per_call_kwargs: dict = {
-        "cache_mode": resolved_cache,
-        "page_timeout": page_timeout * 1000,
-    }
+    per_call_kwargs: dict = {"cache_mode": resolved_cache}
+    if page_timeout is not None:
+        per_call_kwargs["page_timeout"] = page_timeout * 1000
     if css_selector is not None:
         per_call_kwargs["css_selector"] = css_selector
     if target_elements is not None:
@@ -3037,7 +3338,7 @@ async def crawl_sitemap(
         per_call_kwargs["js_code"] = js_code
     if user_agent is not None:
         per_call_kwargs["user_agent"] = user_agent
-    if word_count_threshold != 10:
+    if word_count_threshold is not None:
         per_call_kwargs["word_count_threshold"] = word_count_threshold
     if query is not None:
         per_call_kwargs["query"] = query

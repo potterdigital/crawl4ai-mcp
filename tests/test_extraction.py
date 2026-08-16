@@ -55,10 +55,36 @@ class TestCheckApiKey:
         result = _check_api_key("ollama/llama3")
         assert result is None
 
-    def test_unknown_provider_passes(self) -> None:
-        """Returns None for unknown providers — let litellm handle them."""
+    def test_unknown_provider_is_refused(self) -> None:
+        """An unrecognised provider must be refused, never attempted.
+
+        This test previously asserted the opposite, on the stated theory that
+        litellm would reject an unknown provider itself. Driving the real tool
+        proved it does not: litellm treats an unrecognised provider as an
+        OpenAI-compatible model name and sends the request to OpenAI.
+        `provider="notarealvendor/some-model"` came back as an OpenAIException,
+        which means on a machine with OPENAI_API_KEY set, a typo silently bills
+        OpenAI for a model nobody named.
+
+        The failure mode guarded here is therefore a wrong-vendor charge, not a
+        confusing error message.
+        """
         result = _check_api_key("some-unknown/model")
-        assert result is None
+        assert result is not None
+        assert "Unknown provider" in result
+        # It must name the alternatives, or the caller cannot act on it.
+        assert "gemini" in result and "openai" in result
+
+    def test_known_providers_are_not_refused_by_that_check(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal must not swallow a known provider with a present key.
+
+        Guards over-correction: a prefix check that rejected everything would
+        also pass the test above.
+        """
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        assert _check_api_key("gemini/gemini-2.5-flash") is None
 
 
 # ---------------------------------------------------------------------------
