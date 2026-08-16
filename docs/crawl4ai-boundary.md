@@ -57,6 +57,65 @@ reading the installed package, not the docs. Re-verify on a major upgrade.
   `{"error": true}`. Match the flag, never the word "error", which appears in
   legitimate extracted data.
 
+## Projected, not passed through
+
+Three upstream shapes are narrowed on the way out rather than forwarded whole.
+Each drop was measured, not assumed.
+
+- **Links** keep `href`, `text` and `title`. crawl4ai attaches seven more per
+  link — `base_domain`, `head_data`, the two `head_extraction_*` fields, and
+  three scores — all `None` or `0.0` unless link-head extraction or a URL
+  scorer ran, and this server enables neither. Measured on one Wikipedia
+  article: 317KB of links became 132KB for the same 997 entries. There is
+  deliberately **no deduplication** — crawl4ai already returns each href once
+  (997 links, 997 distinct hrefs on that page), so deduping would be a lossy
+  transform with nothing to gain.
+- **Tables** keep `headers`, `rows` and `caption`. The `metadata` block is
+  dropped: `row_count` and `column_count` are `len()` of what is already
+  returned, and the rest is the table's raw `id` and `class` attributes.
+- **Block reasons** in a failure diagnostic are flattened to one line and
+  capped. crawl4ai puts raw exception text in them, and a Playwright
+  navigation failure carries a full multi-line call log that would bury
+  everything around it.
+
+Neither `links` nor `tables` is returned unless asked for, and nothing is
+truncated when they are. The size warning lives in the tool docstrings instead,
+because a silent cap on a batch crawl is worse than a large result.
+
+## Ordering inside crawl4ai that changes what a parameter means
+
+`deep_crawl`'s `allowed_domains` forces `include_external` on, and that is not
+a preference. Reading `BFSDeepCrawlStrategy.link_discovery` and
+`can_process_url` in 0.9.2: `include_external` decides which links enter the
+candidate set at all, and the filter chain runs *afterwards* on whatever
+survived. So under the default same-domain scope an off-domain host named in
+`allowed_domains` is already discarded before `DomainFilter` could admit it.
+Nothing raises and nothing warns — the parameter is simply inert. Handing the
+boundary to the allowlist is the only way it can work, and it is stricter than
+the scope it replaces. `blocked_domains` only subtracts, so it needs none of
+this.
+
+Two related facts from the same read, both load-bearing for tests:
+
+- **Depth 0 bypasses the filter chain entirely.** An allowlist that omits the
+  start URL's host still fetches the start page, then drops every link back
+  into its own site. The crawl does *not* stop at one page: links to the
+  allowed hosts are still followed. Measured — `docs.astral.sh/uv/` with
+  `allowed_domains=["github.com"]` returns 3 pages across both hosts, and 1
+  page with the widening removed.
+- **External links are appended after internal ones and the frontier is
+  truncated to remaining capacity.** On a BFS crawl with a small `max_pages`,
+  an external host can therefore never be reached however the allowlist is
+  written. `best-first` sorts the frontier by score before truncating, so a
+  keyword scorer is what lets an extra host through on a short crawl.
+
+`DomainFilter` matching is domain-level like everything else in crawl4ai:
+`_is_subdomain` accepts `domain == parent or domain.endswith("." + parent)`, so
+listing `example.com` also allows `api.example.com`. Its `_extract_domain`
+regex captures the whole netloc, so a URL with an explicit port does not match
+a bare host. Code that needs to predict a filter's verdict should call the
+filter's own `apply()` rather than reimplement this, or the two will drift.
+
 ## Known upstream behaviour we cannot fix here
 
 - **`user_agent` is not reliably per-request.** crawl4ai applies it by mutating
@@ -75,8 +134,24 @@ reading the installed package, not the docs. Re-verify on a major upgrade.
 
 ## Still unexposed
 
-Capability crawl4ai ships that this server does not surface yet, if someone
-wants it: `links` and `tables` on `CrawlResult` (both populated by default and
-currently discarded), `crawl_stats` and `redirected_url` for richer failure
-diagnostics, `JsonXPathExtractionStrategy`, and `DomainFilter` for allowlisting
-extra hosts alongside `scope`.
+Capability crawl4ai ships that this server does not surface, and why.
+
+- **`screenshot`, `pdf`, `mhtml`, `network_requests`, `console_messages`.**
+  Opt-in upstream too — `screenshot`, `pdf`, `capture_mhtml`,
+  `capture_network_requests` and `capture_console_messages` all default
+  `False` on `CrawlerRunConfig` — and each is either binary or very large. An
+  MCP result is JSON on a stdio pipe; base64 page images do not belong in one.
+- **`media`.** Populated by default alongside `links` and `tables`, and left
+  out with them exposed. Images, audio and video carry `src`, `alt`, `score`
+  and dimensions, which serves image harvesting rather than the "read this page
+  / map this site / pull this table" work these tools exist for. Cheap to add
+  the day someone wants it, following the `links` projection exactly.
+- **Proxy rotation and `max_retries`.** crawl4ai's anti-bot retry loop is what
+  fills the `crawl_stats` this server now reports, but its inputs are not
+  exposed as parameters. `max_retries` defaults to 0, so a block is normally
+  one attempt.
+
+`crawl_url` deliberately does not take `include_links` or `include_tables`: it
+returns a plain markdown string, and a model return type is what the SDK needs
+to derive an `outputSchema`. Wrapping one page's markdown in JSON to carry its
+links would bury the content in escaping. Use `crawl_many` with a single URL.

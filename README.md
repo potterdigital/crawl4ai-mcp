@@ -21,10 +21,10 @@ AI coding assistants can't browse the web natively. This MCP server gives them a
 | `repair_browser`     | Install the Chromium build the crawler needs and start the browser, without restarting the server                    |
 | `crawl_url`          | Crawl a URL and return clean markdown. Supports JS rendering, custom headers/cookies, CSS scoping, and cache control |
 | `crawl_many`         | Crawl multiple URLs concurrently with configurable parallelism, politeness delays, and optional disk persistence     |
-| `deep_crawl`         | BFS site crawl — follows links with configurable depth and page limits, politeness delays, and optional disk storage |
+| `deep_crawl`         | BFS site crawl — follows links with configurable depth, page limits, domain allow/block lists, and optional disk storage |
 | `crawl_sitemap`      | Crawl all URLs from an XML sitemap (supports gzip and sitemap indexes, politeness delays, optional disk persistence) |
 | `extract_structured` | LLM-powered structured JSON extraction with a user-defined schema                                                    |
-| `extract_css`        | CSS-selector-based structured extraction — deterministic, no LLM required                                            |
+| `extract_css`        | CSS **or XPath** selector-based structured extraction — deterministic, no LLM required                               |
 | `extract_patterns`   | Regex extraction of emails, phones, prices, dates, URLs and more — no LLM, no schema, no cost                        |
 | `create_session`     | Create a persistent browser session (preserves cookies and state)                                                    |
 | `list_sessions`      | List all active browser sessions                                                                                     |
@@ -88,6 +88,99 @@ before treating content as real.
 `crawl_url` is unchanged and still returns plain markdown. A single page has no
 tabular structure worth exposing, and wrapping it would only bury the content in
 escaping.
+
+### Links and tables
+
+`crawl_many`, `crawl_sitemap`, and `deep_crawl` take `include_links` and
+`include_tables`. crawl4ai collects both on every crawl; they are returned only
+when asked for, because they routinely outweigh the page content — one Wikipedia
+article carries 997 internal links, about 130KB of JSON.
+
+```jsonc
+{
+  "url": "https://en.wikipedia.org/wiki/...",
+  "success": true,
+  "markdown": "...",
+  "links": {
+    "internal": [{ "href": "...", "text": "Jump to content", "title": null }],
+    "external": [{ "href": "...", "text": "Donate", "title": null }]
+  },
+  "tables": [
+    { "headers": ["Country", "Population"],
+      "rows": [["India", "1,428,627,663"]],
+      "caption": "List of countries by population" }
+  ]
+}
+```
+
+Only tables crawl4ai scored as real tabular data are included, so page-layout
+tables are already filtered out. Nothing is truncated when the flags are on, and
+requested links and tables still come back inline when `output_dir` is set —
+only markdown goes to disk.
+
+### When a crawl fails
+
+Errors carry the diagnostics crawl4ai already collected, not just a status code.
+crawl4ai retries behind its own anti-bot detection, so "blocked" can mean one
+refusal or several across a proxy and an HTTP fallback:
+
+```
+Crawl failed
+URL: https://httpbin.org/status/429
+HTTP status: 429
+Error: Blocked by anti-bot protection: HTTP 429 Too Many Requests
+Attempts: 1, 1 blocked
+Blocked by: HTTP 429 Too Many Requests
+```
+
+You also get `Redirected to:` when the crawl ended up somewhere other than where
+you pointed it (a login wall is the usual reason), and `Retry-After:` when the
+server sent one. These lines are omitted when there is nothing non-obvious to
+report, so an ordinary timeout stays a one-line error. The same detail appears in
+each failed page's `error` in a batch crawl.
+
+### Extracting with XPath
+
+`extract_css` takes `selector_type="xpath"` and the identical schema shape, so
+you can reach what CSS cannot — matching on text content, or walking to a parent
+or preceding sibling:
+
+```
+extract_css(url="https://www.python.org/about/",
+            selector_type="xpath",
+            schema={"name": "PyLinks",
+                    "baseSelector": "//a[contains(text(), 'Python')]",
+                    "fields": [{"name": "text", "selector": ".", "type": "text"}]})
+```
+
+Prefer CSS otherwise; it is shorter and more people can read it. With
+`selector_type="xpath"`, start relative field selectors with `./` or `.//` — a
+leading `//` searches the whole document again rather than inside the matched
+item.
+
+### Crawling more than one host
+
+`deep_crawl`'s `scope` cannot express "this docs site *and* its separate API
+host". `allowed_domains` can:
+
+```
+deep_crawl(url="https://docs.example.com",
+           allowed_domains=["docs.example.com", "api.example.com"])
+```
+
+Setting `allowed_domains` **replaces** `scope` as the boundary of the crawl, and
+is stricter than it: nothing outside the listed hosts is followed. That is
+forced by crawl4ai's ordering — it discards off-domain links before any filter
+runs, so an allowlist can only work once external links are let through.
+
+List every host you want crawled, **including the start URL's own**. Leaving it
+out is legal and does something surprising: the start page is still fetched, but
+every link back into its own site is dropped and only the listed hosts are
+traversed. The result carries a `note` when that happens.
+
+`blocked_domains` only subtracts, so it composes with any `scope` without
+widening anything. Subdomains of a listed domain are included in both lists,
+matching crawl4ai's rule everywhere else.
 
 ### Filtering a page to what you asked for
 

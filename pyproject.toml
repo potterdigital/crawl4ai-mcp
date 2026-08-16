@@ -1,6 +1,6 @@
 [project]
 name = "crawl4ai-mcp"
-version = "2.2.0"
+version = "2.3.0"
 description = "MCP server that gives AI assistants web crawling superpowers via crawl4ai"
 readme = "README.md"
 requires-python = ">=3.12"

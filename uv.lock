@@ -452,7 +452,7 @@ wheels = [
 
 [[package]]
 name = "crawl4ai-mcp"
-version = "2.2.0"
+version = "2.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "crawl4ai" },
