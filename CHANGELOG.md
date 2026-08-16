@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2.2.0] - 2026-08-16
 
+### Fixed
+
+- **`list_sessions` reports real session state.** It printed "created N min ago" from this server's own timestamp, while crawl4ai measures the 30-minute TTL from LAST USE and refreshes it on every crawl. A session used a minute ago but created ninety minutes ago therefore rendered as "created 90 min ago" beside a documented 30-minute TTL, implying it was dead when it was live. It now reads crawl4ai's own registry for the true last-used time, marks each session live or expired against the library's actual TTL rather than a hardcoded number, and labels a session that was named but never opened a browser page as exactly that.
+- **`scope="same-origin"` no longer implies a distinction that does not exist.** crawl4ai has no origin-level scoping anywhere: its internal/external split compares registrable domains, so subdomains are followed and scheme and port are ignored. The value is still accepted, but is now documented as an alias for `same-domain` rather than a stricter setting.
+- **`user_agent` documents what it actually does.** crawl4ai applies it by mutating the shared browser config, and contexts are cached and reused, so the first user agent used for a context wins for that context's lifetime: later calls passing a different one are ignored, and calls passing none inherit the previous value. The parameter was promising per-request behaviour it cannot deliver.
+
 ### Added
 
 - **`query` on every crawl tool — filter a page to what you asked for, before spending tokens.** Passing `query="how do I clear the cache"` swaps the density-based pruning filter for crawl4ai's `BM25ContentFilter`, which scores each block against the query. Measured on a real docs page: 9,278 chars became 2,165, about 23% of the page, and the retained text was the caching and pruning sections. Previously the only way to answer "what does this page say about X" was to pull the whole page into context and read past the rest. No LLM, no API key, no cost.

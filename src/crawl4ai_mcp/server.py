@@ -1314,8 +1314,15 @@ async def crawl_url(
             - Single string: "window.scrollTo(0, document.body.scrollHeight);"
             - Note: pass as string; crawl4ai handles execution in the page context.
 
-        user_agent: Override the browser User-Agent string for this request only.
-            Example: "Mozilla/5.0 (compatible; MyBot/1.0)"
+        user_agent: Override the browser User-Agent string.
+
+            Not reliably per-request, despite the name: crawl4ai applies it by
+            mutating the shared browser config, and browser contexts are cached
+            and reused. In practice the FIRST user_agent used for a context wins
+            for that context's lifetime, later calls passing a different one are
+            ignored, and calls passing none inherit the previous value. Use it
+            when every crawl in a run wants the same agent; do not rely on it to
+            vary per call. Example: "Mozilla/5.0 (compatible; MyBot/1.0)"
 
         headers: Dict of custom HTTP headers to send with the request. Applied via
             Playwright page hooks; cleared after the request to avoid leaking into
@@ -1497,11 +1504,39 @@ async def list_sessions(
     if not app.sessions:
         return "No active sessions."
 
+    # Prefer crawl4ai's own registry: it stores (context, page, last_used) and
+    # refreshes last_used on every crawl. Our dict only records creation time,
+    # so a session used a minute ago but created ninety minutes ago rendered as
+    # "created 90 min ago" right next to a documented 30-minute TTL, implying it
+    # was dead when it was live. The TTL is measured from last use, not creation.
+    native: dict = {}
+    ttl = 1800.0
+    try:
+        manager = app.crawler.crawler_strategy.browser_manager
+        native = getattr(manager, "sessions", {}) or {}
+        ttl = float(getattr(manager, "session_ttl", 1800))
+    except AttributeError:  # pragma: no cover - upstream layout change
+        pass
+
     lines = ["Active sessions:"]
     now = time.time()
     for sid, created in sorted(app.sessions.items()):
-        age_mins = (now - created) / 60
-        lines.append(f"  - {sid} (created {age_mins:.0f} min ago)")
+        entry = native.get(sid)
+        if entry is not None:
+            last_used = entry[2]
+            idle = now - last_used
+            state = "expired" if idle > ttl else "live"
+            lines.append(
+                f"  - {sid} (last used {idle / 60:.0f} min ago, {state}; "
+                f"expires after {ttl / 60:.0f} min idle)"
+            )
+        else:
+            # Named but never materialised: create_session with no url and no
+            # cookies registers the name here without opening a browser page.
+            lines.append(
+                f"  - {sid} (declared {(now - created) / 60:.0f} min ago, "
+                "no browser page opened yet)"
+            )
     return "\n".join(lines)
 
 
@@ -2163,8 +2198,11 @@ async def deep_crawl(
 
         scope: Domain scope for link following.
             - "same-domain" (default): Only follow links within the start URL's
-              domain (includes subdomains).
-            - "same-origin": Same behavior as same-domain.
+              domain, INCLUDING its subdomains.
+            - "same-origin": An alias for same-domain, not a stricter setting.
+              crawl4ai has no origin-level scoping, so scheme and port are not
+              compared and subdomains are still followed. If you need true
+              same-origin, filter the results yourself.
             - "any": Follow all links including external domains.
 
         include_pattern: Glob pattern to filter which URLs to follow (e.g.,
@@ -2240,7 +2278,13 @@ async def deep_crawl(
         filters.append(URLPatternFilter(patterns=[exclude_pattern], reverse=True))
     filter_chain = FilterChain(filters=filters) if filters else FilterChain()
 
-    # Map scope to include_external
+    # Map scope to include_external.
+    #
+    # "same-origin" is accepted as an alias, NOT as a stricter setting. crawl4ai
+    # has no origin concept anywhere: its internal/external split compares
+    # registrable domains, so subdomains count as internal and scheme and port
+    # are ignored. Treating the two labels as different would be a promise the
+    # library cannot keep, so the alias is honoured and called out instead.
     if scope in ("same-domain", "same-origin"):
         include_external = False
     elif scope == "any":

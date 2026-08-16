@@ -175,3 +175,72 @@ class TestDestroySessionKillSession:
         """Non-existent session_id is not in the sessions dict."""
         app = _make_app_context()
         assert "nonexistent" not in app.sessions
+
+
+class TestListSessionsReportsRealState:
+    """list_sessions used to print "created N min ago" from our own timestamp
+    while crawl4ai measures the TTL from LAST USE and refreshes it on every
+    crawl. A session used a minute ago but created ninety minutes ago rendered
+    as "created 90 min ago" beside a documented 30-minute TTL, implying it was
+    dead when it was live.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reports_last_used_not_creation_time(self) -> None:
+        import time
+        from unittest.mock import MagicMock
+
+        from crawl4ai_mcp.server import list_sessions
+
+        now = time.time()
+        app = MagicMock()
+        app.sessions = {"s1": now - 5400}  # created 90 minutes ago
+        manager = app.crawler.crawler_strategy.browser_manager
+        manager.sessions = {"s1": ("ctx", "page", now - 60)}  # used 1 min ago
+        manager.session_ttl = 1800
+
+        ctx = MagicMock()
+        ctx.request_context.lifespan_context = app
+        out = await list_sessions(ctx=ctx)
+
+        assert "last used 1 min ago" in out
+        assert "live" in out
+        assert "created 90" not in out
+
+    @pytest.mark.asyncio
+    async def test_marks_an_idle_session_expired(self) -> None:
+        import time
+        from unittest.mock import MagicMock
+
+        from crawl4ai_mcp.server import list_sessions
+
+        now = time.time()
+        app = MagicMock()
+        app.sessions = {"old": now - 7200}
+        manager = app.crawler.crawler_strategy.browser_manager
+        manager.sessions = {"old": ("ctx", "page", now - 7200)}
+        manager.session_ttl = 1800
+
+        ctx = MagicMock()
+        ctx.request_context.lifespan_context = app
+        assert "expired" in await list_sessions(ctx=ctx)
+
+    @pytest.mark.asyncio
+    async def test_a_declared_but_unopened_session_is_labelled(self) -> None:
+        """create_session with no url and no cookies registers a name without
+        opening a page; reporting it as live would be a lie."""
+        import time
+        from unittest.mock import MagicMock
+
+        from crawl4ai_mcp.server import list_sessions
+
+        app = MagicMock()
+        app.sessions = {"declared": time.time() - 120}
+        app.crawler.crawler_strategy.browser_manager.sessions = {}
+        app.crawler.crawler_strategy.browser_manager.session_ttl = 1800
+
+        ctx = MagicMock()
+        ctx.request_context.lifespan_context = app
+        out = await list_sessions(ctx=ctx)
+
+        assert "no browser page opened yet" in out
