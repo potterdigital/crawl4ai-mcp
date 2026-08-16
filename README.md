@@ -75,6 +75,15 @@ since inline markdown comes back JSON-escaped.
 `extract_css` returns `{ "url", "count", "items": [...], "error" }` with `items`
 already parsed, not as a JSON string you decode twice.
 
+If the whole operation fails before any page is attempted (an unreachable or
+non-XML sitemap, say), you get `crawled: 0` and an `error` explaining why,
+rather than an exception.
+
+Note that `success` means the page was **retrieved**, not that the server was
+happy: crawl4ai reports success for anything it managed to fetch, so an HTTP
+404 arrives with `success: true` and the error page's body. Check `status_code`
+before treating content as real.
+
 `crawl_url` is unchanged and still returns plain markdown. A single page has no
 tabular structure worth exposing, and wrapping it would only bury the content in
 escaping.

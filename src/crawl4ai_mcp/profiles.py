@@ -176,12 +176,31 @@ def build_run_config(
     merged["verbose"] = False
 
     # word_count_threshold goes to PruningContentFilter, not CrawlerRunConfig.
+    #
+    # preserve_tags keeps <pre> and <code> out of the pruner's reach. Without
+    # it the filter treats code blocks as low-density noise and either drops
+    # them or reassembles them without their whitespace, so a syntax-
+    # highlighted docs page (mkdocs-material, Docusaurus and friends wrap every
+    # token in its own <span>) turns "uvx pycowsay hello from uv" into
+    # "uvxpycowsayhellofromuv". Feeding that to a model is worse than dropping
+    # it, because it reads like a real command.
+    #
+    # Measured across three real docs sites (uv, Pydantic, FastAPI): code lines
+    # surviving intact went 1 -> 10 of 24, mangled lines 1 -> 0, and retained
+    # content nearly doubled (26.9k -> 48.6k chars). Nothing got smaller.
+    # crawl4ai's mark_code and handle_code_in_pre options were measured too and
+    # made no difference, so they are deliberately not set.
+    #
+    # This is an improvement, not a cure: fit_markdown still drops newlines
+    # between statements inside a multi-line block. Callers who need verbatim
+    # code should scope with css_selector and lower word_count_threshold.
     wct = merged.pop("word_count_threshold", 10)
     merged["markdown_generator"] = DefaultMarkdownGenerator(
         content_filter=PruningContentFilter(
             threshold=0.48,
             threshold_type="fixed",
             min_word_threshold=wct,
+            preserve_tags=["pre", "code"],
         )
     )
 

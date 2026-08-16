@@ -467,6 +467,13 @@ class CrawlBatchResult(BaseModel):
     """Path to manifest.json, when output_dir was set."""
     note: str | None = None
     """Anything the caller should know, e.g. that a sitemap was truncated."""
+    error: str | None = None
+    """Why the crawl produced nothing at all.
+
+    Set only when the whole operation failed before any page was attempted --
+    an unreachable or unparseable sitemap, say. A failure affecting one page
+    is reported on that page, not here, so a partial crawl leaves this None.
+    """
 
 
 class ExtractionResult(BaseModel):
@@ -1973,17 +1980,44 @@ async def crawl_sitemap(
         delay,
     )
 
-    # Fetch and parse sitemap XML via httpx (not the browser)
+    # Fetch and parse sitemap XML via httpx (not the browser).
+    # These two paths must return the model, not a string: the tool declares
+    # CrawlBatchResult, so returning a string here fails validation and the
+    # caller gets an opaque tool crash instead of the reason the sitemap failed.
     try:
         urls = await _fetch_sitemap_urls(sitemap_url)
-    except (httpx.HTTPError, ET.ParseError) as e:
-        return f"Sitemap fetch failed\nURL: {sitemap_url}\nError: {e}"
+    except httpx.HTTPError as e:
+        return CrawlBatchResult(
+            crawled=0,
+            total=0,
+            pages=[],
+            error=f"Could not fetch the sitemap at {sitemap_url}: {e}",
+        )
+    except ET.ParseError as e:
+        # Distinct from a fetch failure on purpose. The usual cause is an HTML
+        # page passed as the sitemap URL, and "fetch failed" would send someone
+        # checking the network when the request actually succeeded.
+        return CrawlBatchResult(
+            crawled=0,
+            total=0,
+            pages=[],
+            error=(
+                f"{sitemap_url} was fetched but is not valid sitemap XML ({e}). "
+                "If this is an HTML page, look for the real sitemap in "
+                "robots.txt or try /sitemap.xml on the same host."
+            ),
+        )
 
     if not urls:
-        return (
-            f"No URLs found in sitemap\n"
-            f"URL: {sitemap_url}\n"
-            f"The sitemap may be empty or use an unsupported format."
+        return CrawlBatchResult(
+            crawled=0,
+            total=0,
+            pages=[],
+            error=(
+                f"No URLs found in sitemap {sitemap_url}. It may be empty, or "
+                "in a format this server does not parse. Sitemap indexes and "
+                ".xml.gz are supported; an HTML page is not a sitemap."
+            ),
         )
 
     # Truncate if over max_urls

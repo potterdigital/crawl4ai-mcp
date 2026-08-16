@@ -19,9 +19,12 @@ The failure modes pinned here:
 """
 
 import asyncio
+import inspect
 import json
+import textwrap
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from crawl4ai_mcp import server as srv
@@ -197,6 +200,105 @@ class TestHttpErrorPagesAreDetectable:
         schema = _schema(tools, "crawl_many")
         page_props = schema["$defs"]["PageResult"]["properties"]
         assert "status_code" in page_props
+
+
+class TestEveryReturnPathMatchesTheDeclaredType:
+    """The bug this exists for: crawl_sitemap's two early-return error paths
+    still returned strings after the tool was annotated -> CrawlBatchResult.
+    Pydantic rejected them at the boundary, so an unreachable or non-sitemap
+    URL produced an opaque "1 validation error for CrawlBatchResult" crash
+    instead of the reason it failed. Found by pointing the tool at a real
+    sitemap index and at an HTML page; no existing test touched those paths.
+
+    This walks the AST instead of calling the tools, so it covers error
+    branches that need a specific network failure to reach.
+    """
+
+    RETURN_TYPES = {
+        "crawl_many": "CrawlBatchResult",
+        "crawl_sitemap": "CrawlBatchResult",
+        "deep_crawl": "CrawlBatchResult",
+        "extract_css": "ExtractionResult",
+    }
+    HELPERS = {"_batch_result", "_persist_results"}
+
+    @pytest.mark.parametrize("tool_name", sorted(RETURN_TYPES))
+    def test_no_return_path_yields_a_bare_string(self, tool_name: str) -> None:
+        import ast
+
+        want = self.RETURN_TYPES[tool_name]
+        source = textwrap.dedent(inspect.getsource(getattr(srv, tool_name)))
+        fn = ast.parse(source).body[0]
+
+        offenders = []
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Return) or node.value is None:
+                continue
+            value = node.value
+            ok = isinstance(value, ast.Call) and (
+                getattr(value.func, "id", "") == want
+                or getattr(value.func, "id", "") in self.HELPERS
+            )
+            if not ok:
+                offenders.append(ast.unparse(value)[:70])
+
+        assert offenders == [], (
+            f"{tool_name} declares -> {want} but returns something else; "
+            f"these fail validation at the tool boundary: {offenders}"
+        )
+
+
+class TestSitemapFailuresAreReportable:
+    def test_unfetchable_sitemap_reports_instead_of_crashing(self) -> None:
+        """A real sitemap URL that 404s or times out must come back as data."""
+        with patch.object(
+            srv, "_fetch_sitemap_urls", AsyncMock(side_effect=httpx.ConnectError("boom"))
+        ):
+            out = asyncio.run(
+                srv.crawl_sitemap(sitemap_url="https://example.com/sitemap.xml",
+                                  ctx=_extraction_ctx())
+            )
+
+        assert isinstance(out, CrawlBatchResult)
+        assert (out.crawled, out.total, out.pages) == (0, 0, [])
+        assert "boom" in out.error
+
+    def test_a_parse_failure_is_not_reported_as_a_fetch_failure(self) -> None:
+        """Passing an HTML page as the sitemap URL is the common mistake. Calling
+        that a fetch failure sends the user to check the network, when the
+        request actually succeeded and the XML parse is what failed."""
+        import xml.etree.ElementTree as ET
+
+        with patch.object(
+            srv,
+            "_fetch_sitemap_urls",
+            AsyncMock(side_effect=ET.ParseError("syntax error: line 1, column 0")),
+        ):
+            out = asyncio.run(
+                srv.crawl_sitemap(sitemap_url="https://example.com/",
+                                  ctx=_extraction_ctx())
+            )
+
+        assert (out.crawled, out.total) == (0, 0)
+        assert "not valid sitemap XML" in out.error
+        assert "could not fetch" not in out.error.lower()
+        assert "robots.txt" in out.error, "should say how to find the real sitemap"
+
+    def test_a_non_sitemap_url_reports_instead_of_crashing(self) -> None:
+        """Pointing the tool at an HTML page is an easy mistake to make."""
+        with patch.object(srv, "_fetch_sitemap_urls", AsyncMock(return_value=[])):
+            out = asyncio.run(
+                srv.crawl_sitemap(sitemap_url="https://example.com/",
+                                  ctx=_extraction_ctx())
+            )
+
+        assert (out.crawled, out.total) == (0, 0)
+        assert "No URLs found" in out.error
+
+    def test_a_healthy_crawl_leaves_error_unset(self) -> None:
+        """error means the whole operation failed; a partial crawl must not set it."""
+        page = srv.PageResult(url="https://a", success=True)
+        assert CrawlBatchResult(crawled=1, total=1, pages=[page]).error is None
 
 
 class TestBatchResultRoundTrips:
