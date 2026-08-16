@@ -35,6 +35,7 @@ from crawl4ai import (
     CacheMode,
     CrawlerRunConfig,
     JsonCssExtractionStrategy,
+    JsonXPathExtractionStrategy,
     LLMConfig,
     LLMExtractionStrategy,
     RegexExtractionStrategy,
@@ -402,6 +403,105 @@ PROVIDER_ENV_VARS: dict[str, str | None] = {
 }
 
 
+def _one_line(text: object, limit: int = 200) -> str:
+    """Collapse a value to a single truncated line fit for an error message.
+
+    crawl4ai puts raw exception text in its block reasons, and a Playwright
+    navigation failure carries a multi-line call log. Pasted verbatim into a
+    diagnostic that is already several lines long, one of those buries
+    everything around it.
+    """
+    flattened = " ".join(str(text).split())
+    if len(flattened) <= limit:
+        return flattened
+    return flattened[: limit - 1] + "…"
+
+
+def _failure_diagnostics(url: str, result) -> list[str]:
+    """Explain WHY a crawl failed, using fields crawl4ai already populates.
+
+    Returns extra lines to append to an error report, or [] when there is
+    nothing non-obvious to say. Every source here is filled by crawl4ai on its
+    own; none of it costs an extra request.
+
+    What it surfaces, and why each one earns its place:
+
+    - `redirected_url`, when it differs from what was asked for. A crawl that
+      failed somewhere other than where it was pointed is a different problem
+      from one that failed at the target, and a login wall is the usual reason.
+      crawl4ai sets this field even when nothing redirected, so the comparison
+      is what makes it meaningful rather than noise on every error.
+    - `Retry-After`, when the server sent one. On a 429 this is the single most
+      actionable header there is, and `response_headers` is captured before the
+      block check, so it survives onto a result marked failed.
+    - `crawl_stats`, when it shows retries or blocking. crawl4ai retries behind
+      anti-bot detection on its own, so "blocked" can mean one refusal or five,
+      possibly across proxies and an HTTP fallback. Without this the caller sees
+      a single terse message and cannot tell a hard block from a flaky one.
+
+    Everything is read defensively. `crawl_stats` is None on a plain
+    single-attempt connection failure -- the retry loop re-raises rather than
+    building a result when there is one proxy and one attempt -- which is the
+    most common failure of all, so absence here is normal, not exceptional.
+    """
+    lines: list[str] = []
+
+    redirected = getattr(result, "redirected_url", None)
+    if isinstance(redirected, str) and redirected and redirected != url:
+        code = getattr(result, "redirected_status_code", None)
+        suffix = f" (HTTP {code})" if isinstance(code, int) else ""
+        lines.append(f"Redirected to: {redirected}{suffix}")
+
+    headers = getattr(result, "response_headers", None)
+    if isinstance(headers, dict):
+        retry_after = next(
+            (v for k, v in headers.items() if str(k).lower() == "retry-after"), None
+        )
+        if retry_after:
+            lines.append(f"Retry-After: {_one_line(retry_after, 60)}")
+
+    stats = getattr(result, "crawl_stats", None)
+    if not isinstance(stats, dict):
+        return lines
+
+    attempts_log = stats.get("proxies_used")
+    attempts_log = attempts_log if isinstance(attempts_log, list) else []
+    blocked = [a for a in attempts_log if isinstance(a, dict) and a.get("blocked")]
+    retries = stats.get("retries")
+    retries = retries if isinstance(retries, int) else 0
+
+    # Stay quiet on a clean single failure: repeating "1 attempt, 0 retries"
+    # on every error would drown the cases where the numbers mean something.
+    if not blocked and retries <= 0:
+        return lines
+
+    total = stats.get("attempts")
+    total = total if isinstance(total, int) else len(attempts_log)
+    detail = f"Attempts: {total}"
+    if retries > 0:
+        detail += f" ({retries} retried after a block)"
+    if blocked:
+        detail += f", {len(blocked)} blocked"
+    lines.append(detail)
+
+    # Reasons repeat across attempts far more often than they differ, so dedupe
+    # rather than printing the same sentence once per retry.
+    reasons: list[str] = []
+    for attempt in blocked:
+        reason = _one_line(attempt.get("reason") or "")
+        if reason and reason not in reasons:
+            reasons.append(reason)
+    for reason in reasons[:3]:
+        lines.append(f"Blocked by: {reason}")
+
+    if stats.get("fallback_fetch_used"):
+        resolved = stats.get("resolved_by")
+        outcome = "succeeded" if resolved == "fallback_fetch" else "also failed"
+        lines.append(f"crawl4ai's plain-HTTP fallback was tried and {outcome}.")
+
+    return lines
+
+
 def _format_crawl_error(url: str, result) -> str:
     """Convert a failed CrawlResult into a structured error string for Claude.
 
@@ -409,12 +509,14 @@ def _format_crawl_error(url: str, result) -> str:
     structured string (rather than raising) lets Claude reason about the failure
     and decide how to proceed.
     """
-    return (
-        f"Crawl failed\n"
-        f"URL: {url}\n"
-        f"HTTP status: {result.status_code}\n"
-        f"Error: {result.error_message}"
-    )
+    lines = [
+        "Crawl failed",
+        f"URL: {url}",
+        f"HTTP status: {result.status_code}",
+        f"Error: {result.error_message}",
+    ]
+    lines.extend(_failure_diagnostics(url, result))
+    return "\n".join(lines)
 
 
 def _extraction_error(extracted_content: str | None) -> str | None:
@@ -561,13 +663,20 @@ def _page_results(results: list, include_content: bool = True) -> list[PageResul
                 )
             )
         else:
+            # Same diagnostics the single-page tools report. A batch is where
+            # they matter most: crawling 50 URLs and having 10 come back
+            # "Blocked by anti-bot protection" says nothing about whether the
+            # host throttled once or refused every retry.
+            error = "\n".join(
+                [result.error_message or "", *_failure_diagnostics(result.url, result)]
+            ).strip()
             pages.append(
                 PageResult(
                     url=result.url,
                     success=False,
                     status_code=result.status_code,
                     title=meta.get("title"),
-                    error=result.error_message,
+                    error=error or None,
                     depth=meta.get("depth"),
                     parent_url=meta.get("parent_url"),
                 )
@@ -1873,7 +1982,7 @@ async def extract_structured(
 
 
 @mcp.tool(
-    title="Extract structured JSON with CSS selectors (free)",
+    title="Extract structured JSON with CSS or XPath selectors (free)",
     annotations=ToolAnnotations(
         read_only_hint=False,  # js_code runs caller JS in-page
         destructive_hint=False,  # nothing is torn down
@@ -1884,27 +1993,43 @@ async def extract_structured(
 async def extract_css(
     url: str,
     schema: dict,
+    selector_type: str = "css",
     css_selector: str | None = None,
     wait_for: str | None = None,
     js_code: str | None = None,
     page_timeout: int = 60,
     ctx: Context[AppContext] = None,
 ) -> ExtractionResult:
-    """Extract structured JSON from a page using CSS selectors (no LLM, no cost).
+    """Extract structured JSON from a page using CSS or XPath selectors (no LLM, no cost).
 
-    Uses crawl4ai's JsonCssExtractionStrategy for deterministic, repeatable
-    extraction. No LLM API call is made — this tool is completely free to use.
+    Uses crawl4ai's JsonCssExtractionStrategy or JsonXPathExtractionStrategy for
+    deterministic, repeatable extraction. No LLM API call is made — this tool is
+    completely free to use.
 
     Args:
         url: The URL to crawl and extract data from.
 
+        selector_type: Which selector language the schema is written in.
+            - "css" (default): CSS selectors, e.g. "div.product h2".
+            - "xpath": XPath 1.0 expressions, e.g. "//div[@class='product']/h2".
+
+            Both take the identical schema shape below; only the selector
+            strings change. Reach for XPath when CSS cannot express the match:
+            selecting by text content (`//a[contains(text(), 'Download')]`),
+            walking to a parent or preceding sibling, or indexing into a
+            position. Prefer CSS otherwise — it is shorter and far more people
+            can read it.
+
         schema: Extraction schema dict defining what to extract. Must contain:
             - "name": A label for the extraction (e.g. "Products")
-            - "baseSelector": CSS selector matching each repeating item
-              (e.g. "div.product-card")
+            - "baseSelector": Selector matching each repeating item
+              (e.g. "div.product-card", or "//div[@class='product-card']")
             - "fields": List of field definitions, each with:
               - "name": Field name in output JSON
-              - "selector": CSS selector relative to baseSelector
+              - "selector": Selector relative to baseSelector. With
+                selector_type="xpath", start relative paths with "./" or ".//"
+                — a leading "//" searches the whole document again, not inside
+                the matched item.
               - "type": One of "text", "attribute", "html", "regex",
                 "list", "nested", "nested_list"
               - "attribute": Required when type is "attribute" (e.g. "href", "src")
@@ -1913,7 +2038,7 @@ async def extract_css(
               - "fields": Required for "nested"/"nested_list"/"list" types
                 (recursive field definitions)
 
-            Example:
+            CSS example:
             {
                 "name": "Products",
                 "baseSelector": "div.product",
@@ -1925,8 +2050,22 @@ async def extract_css(
                 ]
             }
 
+            The same schema in XPath:
+            {
+                "name": "Products",
+                "baseSelector": "//div[@class='product']",
+                "fields": [
+                    {"name": "title", "selector": ".//h2", "type": "text"},
+                    {"name": "price", "selector": ".//*[@class='price']", "type": "text"},
+                    {"name": "url", "selector": ".//a", "type": "attribute",
+                     "attribute": "href"}
+                ]
+            }
+
         css_selector: Restrict extraction scope to elements matching this
-            CSS selector before applying the extraction schema.
+            CSS selector before applying the extraction schema. Always CSS,
+            regardless of selector_type: it is crawl4ai's page-level scoping
+            parameter, applied before the schema runs.
 
         wait_for: Wait condition before extraction (CSS: "css:#el",
             JS: "js:() => expr"). Useful for dynamically loaded content.
@@ -1936,9 +2075,30 @@ async def extract_css(
 
         page_timeout: Page load timeout in seconds (default 60).
     """
-    logger.info("extract_css: %s", url)
+    logger.info("extract_css: %s (selector_type=%s)", url, selector_type)
 
-    strategy = JsonCssExtractionStrategy(schema, verbose=False)
+    # An unrecognised selector_type is refused rather than defaulted, unlike
+    # cache_mode elsewhere in this server. Falling back to CSS would feed XPath
+    # expressions to a CSS parser, and the caller would get "your selectors
+    # matched nothing" — a message pointing at the schema when the real fault
+    # is one misspelled argument.
+    strategies = {
+        "css": JsonCssExtractionStrategy,
+        "xpath": JsonXPathExtractionStrategy,
+    }
+    strategy_cls = strategies.get(selector_type.lower().strip())
+    if strategy_cls is None:
+        return ExtractionResult(
+            url=url,
+            count=0,
+            items=[],
+            error=(
+                f"Unknown selector_type {selector_type!r}. "
+                f"Use 'css' (default) or 'xpath'."
+            ),
+        )
+
+    strategy = strategy_cls(schema, verbose=False)
 
     # Build CrawlerRunConfig directly (not via build_run_config) —
     # extraction tools don't need markdown_generator or profile merging.
@@ -1968,9 +2128,9 @@ async def extract_css(
             count=0,
             items=[],
             error=(
-                "The CSS selectors in the schema did not match any elements on the "
-                "page. Verify that baseSelector and the field selectors are correct "
-                "for this page's HTML structure."
+                f"The {selector_type.lower().strip()} selectors in the schema did not "
+                "match any elements on the page. Verify that baseSelector and the "
+                "field selectors are correct for this page's HTML structure."
             ),
         )
 
