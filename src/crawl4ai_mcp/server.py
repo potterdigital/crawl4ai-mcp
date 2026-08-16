@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 import uuid
@@ -22,7 +23,8 @@ logger = logging.getLogger(__name__)
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from crawl4ai import (
     AsyncWebCrawler,
@@ -47,6 +49,195 @@ from mcp.server.session import ServerSession
 from crawl4ai_mcp.profiles import ProfileManager, build_run_config
 
 
+AUTO_REPAIR_ENV = "CRAWL4AI_MCP_AUTO_REPAIR"
+BROWSER_INSTALL_TIMEOUT_S = 1800
+
+# Serializes browser installs so a background repair and a repair_browser call
+# can never run two downloads into the same cache directory at once.
+_repair_lock = asyncio.Lock()
+
+
+@dataclass
+class BrowserState:
+    """Readiness of the Chromium browser the crawler needs.
+
+    status is one of:
+      ready     — crawler is live and tools can run
+      repairing — an automatic `crawl4ai-setup` install is in flight
+      failed    — no browser, and no repair running; detail says why
+
+    This exists because the browser can be missing for a reason the server can
+    fix itself (Playwright upgraded and its matching Chromium build was never
+    downloaded). Exiting on that condition hides the cause: the MCP client
+    reports only that the server failed to connect, and the actionable stderr
+    message is buried in a connect log nobody reads.
+    """
+
+    status: str = "ready"
+    detail: str = ""
+    started_at: float = 0.0
+
+
+def _auto_repair_enabled() -> bool:
+    """Automatic browser install is on unless explicitly disabled."""
+    return os.environ.get(AUTO_REPAIR_ENV, "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+
+def _chromium_status() -> tuple[bool, str]:
+    """Report whether the Chromium build Playwright expects is present on disk.
+
+    Returns (ok, detail). Never raises — a broken Playwright install is itself
+    a reportable state, not a crash.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        return False, f"Playwright is not importable in this environment: {e}"
+
+    try:
+        with sync_playwright() as p:
+            exe = p.chromium.executable_path
+            if not exe or not Path(exe).exists():
+                return False, f"Chromium build not found at {exe or '<unknown path>'}"
+            return True, exe
+    except Exception as e:
+        return False, str(e)
+
+
+def _install_browser() -> tuple[bool, str]:
+    """Download the Chromium build Playwright expects. Blocking; call via to_thread.
+
+    Prefers the `crawl4ai-setup` console script from this venv because it is the
+    documented fix and also covers patchright and crawl4ai's local DB init.
+    Falls back to `python -m playwright install chromium`, which fixes the
+    browser itself, when that script is absent.
+
+    Output is captured rather than inherited: anything a child writes to our
+    stdout would corrupt the MCP JSON-RPC stream.
+    """
+    setup_script = Path(sys.executable).parent / "crawl4ai-setup"
+    if setup_script.exists():
+        cmd = [str(setup_script)]
+    else:
+        cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+
+    logger.info("Installing browser via: %s", " ".join(cmd))
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=BROWSER_INSTALL_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"browser install timed out after {BROWSER_INSTALL_TIMEOUT_S}s"
+    except Exception as e:
+        return False, f"browser install could not be launched: {e}"
+
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip()[-600:]
+        return False, f"browser install exited {proc.returncode}: {tail}"
+
+    ok, detail = _chromium_status()
+    if not ok:
+        return (
+            False,
+            f"install reported success but Chromium is still missing: {detail}",
+        )
+    return True, detail
+
+
+def _build_browser_config() -> BrowserConfig:
+    """Browser settings shared by initial startup and any later repair."""
+    return BrowserConfig(
+        headless=True,
+        verbose=False,  # CRITICAL: verbose=True outputs to stdout, corrupting MCP transport
+        extra_args=[
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            "--no-sandbox",
+        ],
+    )
+
+
+async def _start_crawler() -> tuple[AsyncWebCrawler | None, str]:
+    """Create and start a crawler. Returns (crawler, error_detail)."""
+    crawler = AsyncWebCrawler(config=_build_browser_config())
+    try:
+        await crawler.start()
+        return crawler, ""
+    except Exception as e:
+        try:
+            await crawler.close()
+        except Exception:
+            pass
+        return None, str(e)
+
+
+async def _repair_browser(app_ctx: "AppContext") -> tuple[bool, str]:
+    """Install the browser, then bring the crawler up. Mutates app_ctx in place.
+
+    Safe to call concurrently: the lock means a second caller waits for the
+    install in flight and then observes the resulting state rather than
+    starting a competing download.
+    """
+    async with _repair_lock:
+        if app_ctx.crawler is not None:
+            return True, "browser already ready"
+
+        app_ctx.browser.status = "repairing"
+        app_ctx.browser.started_at = time.time()
+
+        ok, detail = await asyncio.to_thread(_install_browser)
+        if not ok:
+            app_ctx.browser.status = "failed"
+            app_ctx.browser.detail = detail
+            logger.error("Browser repair failed: %s", detail)
+            return False, detail
+
+        crawler, err = await _start_crawler()
+        if crawler is None:
+            app_ctx.browser.status = "failed"
+            app_ctx.browser.detail = err
+            logger.error("Browser installed but crawler failed to start: %s", err)
+            return False, err
+
+        app_ctx.crawler = crawler
+        app_ctx.browser.status = "ready"
+        app_ctx.browser.detail = ""
+        logger.info("Browser repaired — crawler is operational")
+        return True, "browser installed and crawler started"
+
+
+def _require_crawler(app: "AppContext") -> AsyncWebCrawler:
+    """Return the live crawler, or raise an error that says how to fix it.
+
+    FastMCP surfaces the exception text to the calling agent, so this is what
+    turns a dead browser into something the caller can act on in one step
+    instead of a cryptic AttributeError on None.
+    """
+    if app.crawler is not None:
+        return app.crawler
+
+    state = app.browser
+    if state.status == "repairing":
+        elapsed = int(time.time() - state.started_at)
+        raise RuntimeError(
+            f"Browser not ready: Chromium is installing automatically ({elapsed}s elapsed). "
+            "Retry this call shortly, or call repair_browser to wait for the install to finish."
+        )
+
+    raise RuntimeError(
+        "Browser unavailable — Playwright's Chromium build is missing or failed to launch. "
+        "Call the repair_browser tool to install it, or run `uv run crawl4ai-setup` in the "
+        f"crawl4ai-mcp project. Details: {state.detail or 'unknown'}"
+    )
+
+
 @dataclass
 class AppContext:
     """Typed lifespan context shared across all tool calls.
@@ -61,11 +252,19 @@ class AppContext:
     sessions maps session_id strings to their creation timestamp (seconds since
     epoch). Sessions are persistent browser pages that preserve cookies,
     localStorage, and DOM state across crawl_url calls.
+
+    crawler is None only while the browser is unavailable (missing Chromium
+    build, or a failed launch). The server deliberately stays up in that state
+    so the failure is visible through ping and the tool errors, instead of the
+    process exiting and the MCP client showing a bare "failed to connect".
+
+    browser carries that readiness state and the remediation detail.
     """
 
-    crawler: AsyncWebCrawler
+    crawler: AsyncWebCrawler | None
     profile_manager: ProfileManager
     sessions: dict[str, float]
+    browser: "BrowserState" = field(default_factory=lambda: BrowserState())
 
 
 @asynccontextmanager
@@ -78,37 +277,62 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     """
     logger.info("crawl4ai MCP server starting — initializing browser")
 
-    browser_cfg = BrowserConfig(
-        headless=True,
-        verbose=False,  # CRITICAL: verbose=True outputs to stdout, corrupting MCP transport
-        extra_args=[
-            "--disable-gpu",
-            "--disable-dev-shm-usage",
-            "--no-sandbox",
-        ],
-    )
-    crawler = AsyncWebCrawler(config=browser_cfg)
-    await crawler.start()
-    logger.info("Browser ready — crawl4ai MCP server is operational")
+    crawler, err = await _start_crawler()
+    state = BrowserState()
+    if crawler is not None:
+        logger.info("Browser ready — crawl4ai MCP server is operational")
+    else:
+        state.status = "failed"
+        state.detail = err
+        logger.error("Browser failed to start: %s", err)
 
     profile_manager = ProfileManager()
-    logger.info("Loaded %d profile(s): %s", len(profile_manager.names), profile_manager.names)
+    logger.info(
+        "Loaded %d profile(s): %s", len(profile_manager.names), profile_manager.names
+    )
 
     # Fire-and-forget version check — never blocks server readiness
     asyncio.create_task(_startup_version_check())
 
-    app_ctx = AppContext(crawler=crawler, profile_manager=profile_manager, sessions={})
+    app_ctx = AppContext(
+        crawler=crawler,
+        profile_manager=profile_manager,
+        sessions={},
+        browser=state,
+    )
+
+    # A missing browser is repairable, so repair it — but in the background.
+    # MCP_TIMEOUT bounds server STARTUP (its documented example is 10 seconds),
+    # while tool calls get a far longer budget. Downloading ~150MB of Chromium
+    # here would blow the handshake and the client would report only a connect
+    # failure, which is the exact silent failure this design removes. So the
+    # transport opens immediately and readiness is reported through the tools.
+    if crawler is None and _auto_repair_enabled():
+        state.status = "repairing"
+        state.started_at = time.time()
+        logger.info("Auto-repair enabled — installing browser in the background")
+        asyncio.create_task(_repair_browser(app_ctx))
+    elif crawler is None:
+        logger.error(
+            "Auto-repair disabled via %s — call the repair_browser tool or run "
+            "`uv run crawl4ai-setup`",
+            AUTO_REPAIR_ENV,
+        )
+
     try:
         yield app_ctx
     finally:
-        # Clean up active sessions before closing browser
-        for sid in list(app_ctx.sessions.keys()):
-            try:
-                await crawler.crawler_strategy.kill_session(sid)
-            except Exception:
-                pass
-        logger.info("Shutting down browser")
-        await crawler.close()
+        # Read app_ctx.crawler, not the local: a repair may have replaced it.
+        live = app_ctx.crawler
+        if live is not None:
+            # Clean up active sessions before closing browser
+            for sid in list(app_ctx.sessions.keys()):
+                try:
+                    await live.crawler_strategy.kill_session(sid)
+                except Exception:
+                    pass
+            logger.info("Shutting down browser")
+            await live.close()
         logger.info("Shutdown complete")
 
 
@@ -180,10 +404,18 @@ def _format_multi_results(results: list, include_content: bool = True) -> str:
 
     for result in successes:
         depth_info = ""
-        if result.metadata and isinstance(result.metadata, dict) and "depth" in result.metadata:
+        if (
+            result.metadata
+            and isinstance(result.metadata, dict)
+            and "depth" in result.metadata
+        ):
             depth_info = f" (depth: {result.metadata['depth']})"
         parent_info = ""
-        if result.metadata and isinstance(result.metadata, dict) and result.metadata.get("parent_url"):
+        if (
+            result.metadata
+            and isinstance(result.metadata, dict)
+            and result.metadata.get("parent_url")
+        ):
             parent_info = f"\nParent: {result.metadata['parent_url']}"
 
         header = f"## {result.url}{depth_info}{parent_info}"
@@ -246,11 +478,13 @@ def _persist_results(results: list, output_dir: str) -> str:
         manifest_entries.append(entry)
 
     for result in failures:
-        manifest_entries.append({
-            "url": result.url,
-            "success": False,
-            "error": result.error_message,
-        })
+        manifest_entries.append(
+            {
+                "url": result.url,
+                "success": False,
+                "error": result.error_message,
+            }
+        )
 
     manifest_path = os.path.join(output_dir, "manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as f:
@@ -410,13 +644,17 @@ async def _crawl_with_overrides(
     strategy = crawler.crawler_strategy
 
     if headers:
+
         async def before_goto(page, context, url, config, **kwargs):
             await page.set_extra_http_headers(headers)
+
         strategy.set_hook("before_goto", before_goto)
 
     if cookies:
+
         async def on_page_context_created(page, context, **kwargs):
             await context.add_cookies(cookies)
+
         strategy.set_hook("on_page_context_created", on_page_context_created)
 
     try:
@@ -432,16 +670,59 @@ async def _crawl_with_overrides(
 async def ping(ctx: Context[ServerSession, AppContext]) -> str:
     """Verify the MCP server is running and the browser is ready.
 
-    Returns 'ok' if the server is healthy. Returns an error description if
-    the crawler context is unavailable or the browser has crashed.
+    Returns 'ok' if the server is healthy. If the browser is missing or still
+    installing, returns a description of that state and how to resolve it —
+    the server stays reachable in those states by design, so this is the tool
+    that tells you why crawling is unavailable.
     """
     try:
         app: AppContext = ctx.request_context.lifespan_context
-        if app.crawler is None:
-            return "error: crawler not initialized"
-        return "ok"
+        if app.crawler is not None:
+            return "ok"
+
+        state = app.browser
+        if state.status == "repairing":
+            elapsed = int(time.time() - state.started_at)
+            return (
+                f"degraded: Chromium is installing automatically ({elapsed}s elapsed). "
+                "Crawl tools will work once it finishes; call repair_browser to wait on it."
+            )
+        return (
+            "error: browser unavailable — Playwright's Chromium build is missing or "
+            "failed to launch. Call repair_browser to install it, or run "
+            f"`uv run crawl4ai-setup`. Details: {state.detail or 'unknown'}"
+        )
     except Exception as e:
         logger.error("ping failed: %s", e, exc_info=True)
+        return f"error: {e}"
+
+
+@mcp.tool()
+async def repair_browser(ctx: Context[ServerSession, AppContext]) -> str:
+    """Install the Chromium build the crawler needs, then bring the browser up.
+
+    Use when ping reports the browser is unavailable. This runs the same
+    install as `uv run crawl4ai-setup` (a ~150MB download on a cold cache) and
+    then starts the crawler, so crawling recovers without restarting the
+    server. Safe to call when the browser is already healthy — it is a no-op.
+
+    If a background repair is already running, this waits for it rather than
+    starting a second download.
+    """
+    try:
+        app: AppContext = ctx.request_context.lifespan_context
+        if app.crawler is not None:
+            return "ok: browser already ready"
+
+        ok, detail = await _repair_browser(app)
+        if ok:
+            return f"ok: {detail}"
+        return (
+            f"error: repair failed — {detail}\n"
+            "Try `uv run crawl4ai-setup` in the crawl4ai-mcp project and check its output."
+        )
+    except Exception as e:
+        logger.error("repair_browser failed: %s", e, exc_info=True)
         return f"error: {e}"
 
 
@@ -500,18 +781,10 @@ async def check_update(ctx: Context[ServerSession, AppContext]) -> str:
             f"Error: Could not reach PyPI ({exc})"
         )
     except Exception as exc:
-        return (
-            f"Version check failed\n"
-            f"Installed: {installed}\n"
-            f"Error: {exc}"
-        )
+        return f"Version check failed\nInstalled: {installed}\nError: {exc}"
 
     if Version(latest) <= Version(installed):
-        return (
-            f"crawl4ai is up to date\n"
-            f"Installed: {installed}\n"
-            f"Latest: {latest}"
-        )
+        return f"crawl4ai is up to date\nInstalled: {installed}\nLatest: {latest}"
 
     # Update available — fetch changelog summary
     changelog = await _fetch_changelog_summary(latest)
@@ -651,7 +924,9 @@ async def crawl_url(
     app: AppContext = ctx.request_context.lifespan_context
     run_cfg = build_run_config(app.profile_manager, profile, **per_call_kwargs)
 
-    result = await _crawl_with_overrides(app.crawler, url, run_cfg, headers, cookies)
+    result = await _crawl_with_overrides(
+        _require_crawler(app), url, run_cfg, headers, cookies
+    )
 
     if not result.success:
         return _format_crawl_error(url, result)
@@ -713,7 +988,9 @@ async def create_session(
             session_id=sid,
             cache_mode=CacheMode.BYPASS,
         )
-        result = await _crawl_with_overrides(app.crawler, url, config, headers, cookies)
+        result = await _crawl_with_overrides(
+            _require_crawler(app), url, config, headers, cookies
+        )
 
         app.sessions[sid] = time.time()
 
@@ -734,7 +1011,9 @@ async def create_session(
                 cache_mode=CacheMode.BYPASS,
             )
             # Use about:blank as a no-op navigation target for cookie injection
-            await _crawl_with_overrides(app.crawler, "about:blank", config, None, cookies)
+            await _crawl_with_overrides(
+                _require_crawler(app), "about:blank", config, None, cookies
+            )
         app.sessions[sid] = time.time()
         return f"Session created: {sid}"
 
@@ -783,7 +1062,7 @@ async def destroy_session(
 
     logger.info("destroy_session: %s", session_id)
     try:
-        await app.crawler.crawler_strategy.kill_session(session_id)
+        await _require_crawler(app).crawler_strategy.kill_session(session_id)
     except Exception as exc:
         logger.warning("Error killing session %s: %s", session_id, exc)
     del app.sessions[session_id]
@@ -876,7 +1155,13 @@ async def crawl_many(
     if cache_mode not in _CACHE_MAP:
         logger.warning("Unknown cache_mode %r — defaulting to 'enabled'", cache_mode)
 
-    logger.info("crawl_many: %d URLs (max_concurrent=%d, delay=%.1f, profile=%s)", len(urls), max_concurrent, delay, profile)
+    logger.info(
+        "crawl_many: %d URLs (max_concurrent=%d, delay=%.1f, profile=%s)",
+        len(urls),
+        max_concurrent,
+        delay,
+        profile,
+    )
 
     # Build per-call kwargs — only include optional params when explicitly set
     per_call_kwargs: dict = {
@@ -906,7 +1191,7 @@ async def crawl_many(
         # NO monitor — CrawlerMonitor uses Rich Console -> stdout corruption
     )
 
-    results = await app.crawler.arun_many(
+    results = await _require_crawler(app).arun_many(
         urls=urls,
         config=run_cfg,
         dispatcher=dispatcher,
@@ -986,7 +1271,7 @@ async def extract_structured(
         run_cfg.js_code = js_code
 
     app: AppContext = ctx.request_context.lifespan_context
-    result = await _crawl_with_overrides(app.crawler, url, run_cfg)
+    result = await _crawl_with_overrides(_require_crawler(app), url, run_cfg)
 
     if not result.success:
         return _format_crawl_error(url, result)
@@ -1086,7 +1371,7 @@ async def extract_css(
         run_cfg.js_code = js_code
 
     app: AppContext = ctx.request_context.lifespan_context
-    result = await _crawl_with_overrides(app.crawler, url, run_cfg)
+    result = await _crawl_with_overrides(_require_crawler(app), url, run_cfg)
 
     if not result.success:
         return _format_crawl_error(url, result)
@@ -1192,7 +1477,11 @@ async def deep_crawl(
 
     logger.info(
         "deep_crawl: %s (depth=%d, max_pages=%d, scope=%s, delay=%.1f)",
-        url, max_depth, max_pages, scope, delay,
+        url,
+        max_depth,
+        max_pages,
+        scope,
+        delay,
     )
 
     # Build filter chain from agent params
@@ -1245,7 +1534,7 @@ async def deep_crawl(
     run_cfg = build_run_config(app.profile_manager, profile, **per_call_kwargs)
 
     # When deep_crawl_strategy is set, arun() returns List[CrawlResult]
-    results = await app.crawler.arun(url=url, config=run_cfg)
+    results = await _require_crawler(app).arun(url=url, config=run_cfg)
 
     if output_dir:
         return _persist_results(results, output_dir)
@@ -1327,18 +1616,17 @@ async def crawl_sitemap(
 
     logger.info(
         "crawl_sitemap: %s (max_urls=%d, max_concurrent=%d, delay=%.1f)",
-        sitemap_url, max_urls, max_concurrent, delay,
+        sitemap_url,
+        max_urls,
+        max_concurrent,
+        delay,
     )
 
     # Fetch and parse sitemap XML via httpx (not the browser)
     try:
         urls = await _fetch_sitemap_urls(sitemap_url)
     except (httpx.HTTPError, ET.ParseError) as e:
-        return (
-            f"Sitemap fetch failed\n"
-            f"URL: {sitemap_url}\n"
-            f"Error: {e}"
-        )
+        return f"Sitemap fetch failed\nURL: {sitemap_url}\nError: {e}"
 
     if not urls:
         return (
@@ -1381,7 +1669,7 @@ async def crawl_sitemap(
         # NO monitor -- CrawlerMonitor uses Rich Console -> stdout corruption
     )
 
-    results = await app.crawler.arun_many(
+    results = await _require_crawler(app).arun_many(
         urls=urls,
         config=run_cfg,
         dispatcher=dispatcher,
@@ -1400,37 +1688,30 @@ async def crawl_sitemap(
 
 
 def _preflight_playwright() -> None:
-    """Verify the Playwright Chromium binary exists before opening stdio transport.
+    """Warn early when the Chromium build is missing. Never exits.
 
     Catches the most common install-time failure: `uv sync` upgraded Playwright,
     but the cached Chromium at ms-playwright/chromium-<N> is stale or missing.
-    A clean stderr message + non-zero exit is friendlier than a 60-line traceback
-    buried in the MCP client's connection log.
+
+    This used to exit(1) with a clean stderr message, on the theory that it beat
+    a 60-line anyio traceback. It does — but both are invisible in practice.
+    Exiting before the stdio transport opens means the MCP client reports only
+    "failed to connect", and the remediation line sits in a connect log the user
+    never opens. The server now starts anyway and reports the condition through
+    ping and the crawl tools, where an agent will actually read it, while the
+    lifespan repairs the browser in the background.
     """
-    from pathlib import Path
+    ok, detail = _chromium_status()
+    if ok:
+        return
 
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception as e:
-        sys.stderr.write(
-            f"ERROR: Playwright is not installed in this environment: {e}\n"
-            "Fix:  uv sync && uv run crawl4ai-setup\n"
-        )
-        sys.exit(1)
-
-    try:
-        with sync_playwright() as p:
-            exe = p.chromium.executable_path
-            if not exe or not Path(exe).exists():
-                raise FileNotFoundError(exe or "<unknown path>")
-    except Exception as e:
-        sys.stderr.write(
-            "ERROR: Playwright Chromium binary is missing or stale.\n"
-            "This commonly happens after `uv sync` upgrades Playwright to a new version.\n"
-            "Fix:  uv run crawl4ai-setup\n"
-            f"Details: {e}\n"
-        )
-        sys.exit(1)
+    sys.stderr.write(
+        "WARNING: Playwright Chromium binary is missing or stale.\n"
+        "This commonly happens after `uv sync` upgrades Playwright to a new version.\n"
+        f"Fix:  uv run crawl4ai-setup   (or call the repair_browser tool; auto-repair "
+        f"runs at startup unless {AUTO_REPAIR_ENV}=0)\n"
+        f"Details: {detail}\n"
+    )
 
 
 def main() -> None:

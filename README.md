@@ -17,7 +17,8 @@ AI coding assistants can't browse the web natively. This MCP server gives them a
 
 | Tool                 | Description                                                                                                          |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `ping`               | Health check — confirms server and browser are running                                                               |
+| `ping`               | Health check — reports whether the browser is ready, installing, or unavailable                                      |
+| `repair_browser`     | Install the Chromium build the crawler needs and start the browser, without restarting the server                    |
 | `crawl_url`          | Crawl a URL and return clean markdown. Supports JS rendering, custom headers/cookies, CSS scoping, and cache control |
 | `crawl_many`         | Crawl multiple URLs concurrently with configurable parallelism, politeness delays, and optional disk persistence     |
 | `deep_crawl`         | BFS site crawl — follows links with configurable depth and page limits, politeness delays, and optional disk storage |
@@ -197,13 +198,24 @@ uv run python -m crawl4ai_mcp.server 2>&1 1>/dev/null
 ```
 
 **Chromium fails to start / "Playwright Chromium binary is missing or stale"**
-Most often happens after `uv sync` upgrades Playwright to a new version — the cached Chromium under `~/Library/Caches/ms-playwright/` (macOS) or `~/.cache/ms-playwright/` (Linux) goes stale. The server runs a preflight check at startup and exits with a clear message in your MCP client's log; the fix is:
+Most often happens after `uv sync` upgrades Playwright to a new version — the cached Chromium under `~/Library/Caches/ms-playwright/` (macOS) or `~/.cache/ms-playwright/` (Linux) is then missing the build Playwright expects.
+
+The server handles this itself. It starts normally, reports the condition through `ping`, and installs the browser in the background, so crawling recovers without a restart. To force it from inside your MCP client, call the `repair_browser` tool. To fix it from a shell:
 
 ```bash
 uv run crawl4ai-setup
 ```
 
-Run `uv run crawl4ai-doctor` for a deeper diagnostic.
+Set `CRAWL4AI_MCP_AUTO_REPAIR=0` to disable the automatic install. Run `uv run crawl4ai-doctor` for a deeper diagnostic.
+
+Note that a directory listing of the browser cache can be misleading: Claude Code's own bundled Playwright writes connection descriptor files into a `b/` subdirectory and launches the system Chrome, so the cache can look populated while containing no downloaded browsers at all. Only `chromium-<revision>/` directories count.
+
+**The server never appears in the client at all**
+The server is designed not to exit on a recoverable browser problem, so a true connect failure points elsewhere — usually a bad `--directory` path or a broken virtualenv. Run it by hand and read stderr:
+
+```bash
+uv run python -m crawl4ai_mcp.server 2>&1 1>/dev/null
+```
 
 **`extract_structured` returns an error about missing API key**
 The LLM extraction tool requires a `provider` and corresponding API key (e.g., `OPENAI_API_KEY`). The `extract_css` tool is a free alternative that doesn't require an LLM.

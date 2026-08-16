@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] - 2026-08-16
+
+### Changed
+
+- **A missing browser no longer kills the server.** The startup preflight used to `sys.exit(1)` on a missing or stale Chromium build. That produced a clean stderr message nobody saw: exiting before the stdio transport opens means the MCP client reports only "failed to connect", with the remediation line buried in a connect log. The server now starts regardless and reports the condition through `ping` and every crawl tool, where an agent actually reads it. Preflight still warns on stderr.
+- **Upgraded crawl4ai** from 0.8.6 to 0.9.2. The 0.9.0 breaking changes are confined to the Docker API server (auth required, loopback bind, request trust boundary); upstream states the in-process pip library is unchanged, which is what this server uses. Picks up the 0.8.8/0.8.9/0.9.0 security fixes (SSRF, path traversal, arbitrary file write, credential exfiltration).
+- **Bounded the `mcp` dependency below 2.0.0.** The spec was open-ended, so a routine `uv lock --upgrade` could install mcp 2.0.0 — which renames `FastMCP` to `MCPServer` and drops `MCP_*` env var support, breaking this server's imports.
+
+### Added
+
+- **Automatic browser repair.** When the browser is unavailable at startup, the server installs it in the background and brings the crawler up without a restart. Runs in the background rather than during startup deliberately: `MCP_TIMEOUT` bounds server startup (Anthropic's documented example is 10 seconds) while tool calls get a far longer budget, so a ~150MB Chromium download during the handshake would recreate the very connect failure this removes. Disable with `CRAWL4AI_MCP_AUTO_REPAIR=0`.
+- **`repair_browser` tool.** Installs Chromium and starts the crawler on demand, so a degraded server recovers from inside the session. A no-op when healthy, and it waits on an in-flight background repair instead of starting a competing download.
+- **Actionable tool errors.** `ping` distinguishes ready, installing, and failed. Crawl tools raise an error naming `repair_browser` and `uv run crawl4ai-setup` plus the underlying cause, instead of an `AttributeError` on a `None` crawler.
+
 ## [1.1.2] - 2026-04-21
 
 ### Added

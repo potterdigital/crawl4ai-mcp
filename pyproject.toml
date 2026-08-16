@@ -1,6 +1,6 @@
 [project]
 name = "crawl4ai-mcp"
-version = "1.1.2"
+version = "1.2.0"
 description = "MCP server that gives AI assistants web crawling superpowers via crawl4ai"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -17,8 +17,13 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "mcp[cli]>=1.26.0",
-    "crawl4ai>=0.8.0,<0.9.0",
+    # Upper bound is load-bearing: mcp 2.0.0 renames FastMCP to MCPServer and
+    # drops MCP_* env var support, so an unbounded spec lets a routine
+    # `uv lock --upgrade` silently install a version this server cannot import.
+    "mcp[cli]>=1.26.0,<2.0.0",
+    # 0.9.x breaking changes are confined to the Docker API server; this server
+    # uses the in-process SDK, which upstream states is unchanged.
+    "crawl4ai>=0.9.2,<0.10.0",
 ]
 
 [project.urls]
