@@ -699,6 +699,92 @@ async def _crawl_with_overrides(
             strategy.set_hook("on_page_context_created", None)
 
 
+# Seconds between heartbeats for work that reports no per-item progress.
+# Comfortably under any client idle window while staying far below the
+# "rate limit progress notifications" guidance in the MCP spec.
+PROGRESS_HEARTBEAT_S = 15.0
+
+
+async def _emit_progress(
+    ctx: "Context[ServerSession, AppContext]",
+    progress: float,
+    total: float | None = None,
+    message: str | None = None,
+) -> None:
+    """Send a progress notification, swallowing any failure.
+
+    Progress is telemetry about the work, so a notification that cannot be
+    delivered must never take down the work itself. report_progress is
+    already a no-op when the client did not opt in with a progressToken.
+    """
+    try:
+        await ctx.report_progress(progress=progress, total=total, message=message)
+    except Exception as exc:  # pragma: no cover - transport-level failure
+        logger.debug("progress notification failed: %s", exc)
+
+
+async def _collect_with_progress(
+    stream,
+    ctx: "Context[ServerSession, AppContext]",
+    total: int | None,
+    label: str,
+) -> list:
+    """Drain a streaming crawl into a list, reporting each completed page.
+
+    Why this exists: a client aborts a tool call that sends neither a
+    response nor a progress notification for its idle window — 30 minutes
+    for stdio in Claude Code. A deep crawl used to be a single awaited call
+    that put nothing on the wire until every page was done, so a crawl that
+    ran past the window was killed outright and the work was lost. Reporting
+    each page resets that timer, and it is the only reason deep_crawl runs
+    in streaming mode rather than awaiting the batch.
+
+    Used only by deep_crawl. The two arun_many-based tools heartbeat instead,
+    because streaming there would require swapping the dispatcher; see the
+    note at that call site.
+    """
+    results: list = []
+    async for result in stream:
+        results.append(result)
+        done = len(results)
+        suffix = f"/{total}" if total else ""
+        await _emit_progress(
+            ctx,
+            progress=done,
+            total=total,
+            message=f"{label}: {done}{suffix} pages ({result.url})",
+        )
+    return results
+
+
+async def _await_with_heartbeat(
+    coro,
+    ctx: "Context[ServerSession, AppContext]",
+    label: str,
+    interval: float = PROGRESS_HEARTBEAT_S,
+):
+    """Await an opaque long operation, emitting a progress heartbeat while it runs.
+
+    For work that cannot report per-item progress — a browser install is one
+    opaque subprocess — a heartbeat is what keeps the client's idle timer
+    from firing. The progress value counts heartbeats, which satisfies the
+    spec requirement that progress increase on every notification.
+    """
+    task = asyncio.ensure_future(coro)
+    started = time.time()
+    ticks = 0
+    while True:
+        done, _pending = await asyncio.wait({task}, timeout=interval)
+        if done:
+            return task.result()
+        ticks += 1
+        await _emit_progress(
+            ctx,
+            progress=ticks,
+            message=f"{label} ({int(time.time() - started)}s elapsed)",
+        )
+
+
 @mcp.tool(
     title="Server health check",
     annotations=ToolAnnotations(
@@ -761,7 +847,13 @@ async def repair_browser(ctx: Context[ServerSession, AppContext]) -> str:
         if app.crawler is not None:
             return "ok: browser already ready"
 
-        ok, detail = await _repair_browser(app)
+        # The install can run for up to BROWSER_INSTALL_TIMEOUT_S (1800s), which
+        # is exactly Claude Code's default stdio idle window. Awaiting it silently
+        # means a slow ~150MB download races the client's abort and can lose to
+        # it, so heartbeat while it runs.
+        ok, detail = await _await_with_heartbeat(
+            _repair_browser(app), ctx, "Installing Chromium"
+        )
         if ok:
             return f"ok: {detail}"
         return (
@@ -1293,10 +1385,19 @@ async def crawl_many(
         # NO monitor — CrawlerMonitor uses Rich Console -> stdout corruption
     )
 
-    results = await _require_crawler(app).arun_many(
-        urls=urls,
-        config=run_cfg,
-        dispatcher=dispatcher,
+    # Heartbeat while the batch runs, so a long crawl is not aborted for
+    # idleness. Per-page progress would need a streaming dispatcher, and the
+    # only one crawl4ai ships that streams is MemoryAdaptiveDispatcher, which
+    # stalls dispatch above a system-memory threshold; that is not a failure
+    # mode worth adding to every user's crawls for a nicer progress message.
+    results = await _await_with_heartbeat(
+        _require_crawler(app).arun_many(
+            urls=urls,
+            config=run_cfg,
+            dispatcher=dispatcher,
+        ),
+        ctx,
+        f"Crawling {len(urls)} URLs",
     )
 
     if output_dir:
@@ -1662,8 +1763,19 @@ async def deep_crawl(
     app: AppContext = ctx.request_context.lifespan_context
     run_cfg = build_run_config(app.profile_manager, profile, **per_call_kwargs)
 
-    # When deep_crawl_strategy is set, arun() returns List[CrawlResult]
-    results = await _require_crawler(app).arun(url=url, config=run_cfg)
+    # With deep_crawl_strategy + stream, arun() returns an async generator that
+    # yields each page as it is crawled, so progress can be reported. max_pages
+    # is the cap rather than a known total, so it is the best "total" available.
+    run_cfg.stream = True
+    stream = await _require_crawler(app).arun(url=url, config=run_cfg)
+    results = await _collect_with_progress(stream, ctx, max_pages, "Deep crawling")
+    # Streaming yields in completion order; a stable sort by depth restores the
+    # level-by-level grouping batch mode produced, without reordering within a level.
+    results.sort(
+        key=lambda r: (r.metadata or {}).get("depth", 0)
+        if isinstance(r.metadata, dict)
+        else 0
+    )
 
     if output_dir:
         return _persist_results(results, output_dir)
@@ -1809,10 +1921,16 @@ async def crawl_sitemap(
         # NO monitor -- CrawlerMonitor uses Rich Console -> stdout corruption
     )
 
-    results = await _require_crawler(app).arun_many(
-        urls=urls,
-        config=run_cfg,
-        dispatcher=dispatcher,
+    # Heartbeat while the batch runs; see the note in crawl_many for why this
+    # is a heartbeat rather than per-page streaming progress.
+    results = await _await_with_heartbeat(
+        _require_crawler(app).arun_many(
+            urls=urls,
+            config=run_cfg,
+            dispatcher=dispatcher,
+        ),
+        ctx,
+        f"Crawling {len(urls)} sitemap URLs",
     )
 
     if output_dir:
