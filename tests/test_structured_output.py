@@ -151,6 +151,54 @@ class TestExtractCssStructured:
         assert "expected a list of records" in out.error
 
 
+class TestHttpErrorPagesAreDetectable:
+    """crawl4ai reports success for any page it managed to fetch, so an HTTP
+    404 arrives with success=True and the error page's body as markdown.
+    Verified against a real 404 (docs.astral.sh returns a genuine 404 status).
+
+    Without status_code on the model a caller cannot tell that page apart from
+    real content, and `pages.filter(p => p.success)` silently ingests error
+    pages. This is sharper now than it was with the old prose output, because
+    success is a typed field clients will branch on.
+    """
+
+    def test_status_code_is_carried_for_successful_fetches(self) -> None:
+        result = MagicMock()
+        result.url = "https://example.com/missing"
+        result.success = True
+        result.status_code = 404
+        result.error_message = ""
+        result.metadata = {}
+        result.markdown.fit_markdown = "Page not found"
+        result.markdown.raw_markdown = "Page not found"
+
+        out = srv._batch_result([result])
+
+        assert out.pages[0].success is True
+        assert out.pages[0].status_code == 404, (
+            "a 404 is indistinguishable from real content without this"
+        )
+
+    def test_status_code_is_carried_for_failed_fetches(self) -> None:
+        result = MagicMock()
+        result.url = "https://example.com/blocked"
+        result.success = False
+        result.status_code = 403
+        result.error_message = "Blocked"
+        result.metadata = {}
+        result.markdown = None
+
+        out = srv._batch_result([result])
+
+        assert out.pages[0].status_code == 403
+
+    def test_status_code_is_in_the_declared_schema(self, tools) -> None:
+        """A client that validates against the schema must be allowed to read it."""
+        schema = _schema(tools, "crawl_many")
+        page_props = schema["$defs"]["PageResult"]["properties"]
+        assert "status_code" in page_props
+
+
 class TestBatchResultRoundTrips:
     def test_the_model_serialises_to_the_declared_schema(self) -> None:
         """structuredContent is this dump; if it drifts from the schema, clients

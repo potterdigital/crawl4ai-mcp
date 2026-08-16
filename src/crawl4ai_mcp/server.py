@@ -427,6 +427,16 @@ class PageResult(BaseModel):
 
     url: str
     success: bool
+    """Whether the page was retrieved at all.
+
+    NOT whether the server was happy: crawl4ai reports success for any page it
+    managed to fetch, so an HTTP 404 or 500 arrives with success=True and the
+    error page's body as markdown. Check status_code before treating content
+    as real. Filtering on success alone will quietly mix error pages into the
+    results.
+    """
+    status_code: int | None = None
+    """HTTP status. None when the request never got a response at all."""
     markdown: str | None = None
     """Page content. None on failure, and None when output_dir wrote it to disk."""
     error: str | None = None
@@ -487,6 +497,7 @@ def _page_results(results: list, include_content: bool = True) -> list[PageResul
                 PageResult(
                     url=result.url,
                     success=True,
+                    status_code=result.status_code,
                     markdown=content if include_content else None,
                     depth=meta.get("depth"),
                     parent_url=meta.get("parent_url"),
@@ -497,6 +508,7 @@ def _page_results(results: list, include_content: bool = True) -> list[PageResul
                 PageResult(
                     url=result.url,
                     success=False,
+                    status_code=result.status_code,
                     error=result.error_message,
                     depth=meta.get("depth"),
                     parent_url=meta.get("parent_url"),
