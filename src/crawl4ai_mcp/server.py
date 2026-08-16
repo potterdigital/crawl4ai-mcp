@@ -43,6 +43,7 @@ from crawl4ai.deep_crawling import (
 )
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
 from packaging.version import Version
 from mcp.server.session import ServerSession
 
@@ -338,6 +339,38 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
 mcp = FastMCP("crawl4ai", lifespan=app_lifespan)
 
+
+# --- Tool annotation policy -------------------------------------------------
+#
+# Every tool declares MCP ToolAnnotations so a client can reason about safety
+# before invoking it. The hints are spec-defined (see the ToolAnnotations type
+# in the MCP schema); the non-obvious calls made here are:
+#
+# readOnlyHint=False on every crawl and extract tool. These look like pure
+#   retrieval, and mostly are, but they accept a `js_code` parameter that runs
+#   caller-supplied JavaScript inside the live page. A client that skips
+#   confirmation for read-only tools would then be auto-approving arbitrary
+#   script execution against any URL — including against an authenticated
+#   session created via create_session. The retrieval framing is not worth that
+#   hole, so these are not marked read-only.
+#
+# destructiveHint=False on those same tools. This is where the useful signal
+#   lives: they only ever add (a cache entry, a session page, files under
+#   output_dir). Nothing the server owns is torn down. destroy_session is the
+#   single exception and the only tool marked destructive.
+#
+# openWorldHint=False on check_update. It does reach the network, but only two
+#   fixed endpoints (PyPI and the crawl4ai changelog on GitHub). The caller
+#   cannot steer the target, so its world is closed. The crawl tools take a
+#   caller-supplied URL and are open.
+#
+# Local cache writes are deliberately NOT treated as "modifies its environment".
+# Every HTTP client caches; counting that would make no tool read-only and
+# drain the hint of meaning.
+#
+# Per the spec these are hints, not guarantees, and clients must treat
+# annotations from untrusted servers as untrusted.
+# ---------------------------------------------------------------------------
 
 PROVIDER_ENV_VARS: dict[str, str | None] = {
     "openai": "OPENAI_API_KEY",
@@ -666,7 +699,13 @@ async def _crawl_with_overrides(
             strategy.set_hook("on_page_context_created", None)
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Server health check",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        openWorldHint=False,  # inspects in-process state only
+    ),
+)
 async def ping(ctx: Context[ServerSession, AppContext]) -> str:
     """Verify the MCP server is running and the browser is ready.
 
@@ -697,7 +736,15 @@ async def ping(ctx: Context[ServerSession, AppContext]) -> str:
         return f"error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Install and recover the browser",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,  # writes ~150MB of Chromium to the Playwright cache
+        destructiveHint=False,  # additive install; never removes an existing build
+        idempotentHint=True,  # no-op when the browser is already healthy
+        openWorldHint=True,  # downloads from Playwright's CDN
+    ),
+)
 async def repair_browser(ctx: Context[ServerSession, AppContext]) -> str:
     """Install the Chromium build the crawler needs, then bring the browser up.
 
@@ -726,7 +773,13 @@ async def repair_browser(ctx: Context[ServerSession, AppContext]) -> str:
         return f"error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(
+    title="List crawl profiles",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        openWorldHint=False,  # reads profiles loaded into memory at startup
+    ),
+)
 async def list_profiles(ctx: Context[ServerSession, AppContext]) -> str:
     """List all available crawl profiles and their configuration settings.
 
@@ -762,7 +815,13 @@ async def list_profiles(ctx: Context[ServerSession, AppContext]) -> str:
     return "\n".join(lines).rstrip()
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Check for a crawl4ai update",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,  # reports only; the upgrade itself is scripts/update.sh
+        openWorldHint=False,  # two fixed endpoints; the caller cannot steer them
+    ),
+)
 async def check_update(ctx: Context[ServerSession, AppContext]) -> str:
     """Check if a newer version of crawl4ai is available on PyPI.
 
@@ -800,7 +859,15 @@ async def check_update(ctx: Context[ServerSession, AppContext]) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Crawl a URL to markdown",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,  # js_code runs caller JS in-page; session_id persists state
+        destructiveHint=False,  # additive only: a cache entry and possibly a session
+        idempotentHint=False,  # js_code may have side effects on each call
+        openWorldHint=True,  # fetches a caller-supplied URL
+    ),
+)
 async def crawl_url(
     url: str,
     profile: str | None = None,
@@ -940,7 +1007,15 @@ async def crawl_url(
     return content
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Create a browser session",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,  # allocates a persistent browser page and cookie jar
+        destructiveHint=False,  # additive; refuses rather than replacing an existing session
+        idempotentHint=False,  # session_id=None mints a fresh UUID on every call
+        openWorldHint=True,  # optionally navigates to a caller-supplied URL
+    ),
+)
 async def create_session(
     session_id: str | None = None,
     url: str | None = None,
@@ -1018,7 +1093,13 @@ async def create_session(
         return f"Session created: {sid}"
 
 
-@mcp.tool()
+@mcp.tool(
+    title="List browser sessions",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        openWorldHint=False,  # reads the in-memory session table
+    ),
+)
 async def list_sessions(
     ctx: Context[ServerSession, AppContext] = None,
 ) -> str:
@@ -1042,7 +1123,17 @@ async def list_sessions(
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Destroy a browser session",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        # The only tool here that tears something down: it kills the browser
+        # page and discards its cookies and localStorage. Not recoverable.
+        destructiveHint=True,
+        idempotentHint=True,  # a second call reports "not found" and changes nothing
+        openWorldHint=False,  # acts on server-side state only
+    ),
+)
 async def destroy_session(
     session_id: str,
     ctx: Context[ServerSession, AppContext] = None,
@@ -1069,7 +1160,15 @@ async def destroy_session(
     return f"Session destroyed: {session_id}"
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Crawl many URLs concurrently",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,  # js_code runs caller JS in-page; output_dir writes files
+        destructiveHint=False,  # additive: cache entries and new files under output_dir
+        idempotentHint=False,  # js_code may have side effects on each call
+        openWorldHint=True,  # fetches caller-supplied URLs
+    ),
+)
 async def crawl_many(
     urls: list[str],
     max_concurrent: int = 10,
@@ -1113,6 +1212,9 @@ async def crawl_many(
         output_dir: Directory to write per-page .md files and a manifest.json.
             When set, returns a metadata summary (file paths) instead of page
             content. When None (default), returns full content inline.
+            Existing files are overwritten without warning when their names
+            collide — manifest.json always is. Point this at a directory you
+            own, not one holding files you need.
 
         profile: Name of a crawl profile to use as base configuration.
             Per-call parameters take precedence over profile values.
@@ -1202,7 +1304,15 @@ async def crawl_many(
     return _format_multi_results(results)
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Extract structured JSON with an LLM (paid)",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,  # js_code runs caller JS in-page, and this call costs money
+        destructiveHint=False,  # nothing is torn down
+        idempotentHint=False,  # every call bills the provider again
+        openWorldHint=True,  # fetches a caller-supplied URL and calls an external LLM
+    ),
+)
 async def extract_structured(
     url: str,
     schema: dict,
@@ -1296,7 +1406,15 @@ async def extract_structured(
     )
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Extract structured JSON with CSS selectors (free)",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,  # js_code runs caller JS in-page
+        destructiveHint=False,  # nothing is torn down
+        idempotentHint=False,  # js_code may have side effects on each call
+        openWorldHint=True,  # fetches a caller-supplied URL
+    ),
+)
 async def extract_css(
     url: str,
     schema: dict,
@@ -1387,7 +1505,15 @@ async def extract_css(
     return result.extracted_content
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Crawl a site by following links",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,  # js_code runs caller JS in-page; output_dir writes files
+        destructiveHint=False,  # additive: cache entries and new files under output_dir
+        idempotentHint=False,  # js_code may have side effects on each call
+        openWorldHint=True,  # follows links discovered at crawl time
+    ),
+)
 async def deep_crawl(
     url: str,
     max_depth: int = 3,
@@ -1449,6 +1575,9 @@ async def deep_crawl(
         output_dir: Directory to write per-page .md files and a manifest.json.
             When set, returns a metadata summary (file paths) instead of page
             content. When None (default), returns full content inline.
+            Existing files are overwritten without warning when their names
+            collide — manifest.json always is. Point this at a directory you
+            own, not one holding files you need.
 
         profile: Named crawl profile for per-page configuration.
         cache_mode: Cache behavior (same as crawl_url).
@@ -1541,7 +1670,15 @@ async def deep_crawl(
     return _format_multi_results(results)
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Crawl every URL in a sitemap",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,  # js_code runs caller JS in-page; output_dir writes files
+        destructiveHint=False,  # additive: cache entries and new files under output_dir
+        idempotentHint=False,  # js_code may have side effects on each call
+        openWorldHint=True,  # crawls whatever URLs the sitemap lists
+    ),
+)
 async def crawl_sitemap(
     sitemap_url: str,
     max_urls: int = 500,
@@ -1588,6 +1725,9 @@ async def crawl_sitemap(
         output_dir: Directory to write per-page .md files and a manifest.json.
             When set, returns a metadata summary (file paths) instead of page
             content. When None (default), returns full content inline.
+            Existing files are overwritten without warning when their names
+            collide — manifest.json always is. Point this at a directory you
+            own, not one holding files you need.
 
         profile: Named crawl profile for per-page configuration.
         cache_mode: Cache behavior (same as crawl_url).
