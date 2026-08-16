@@ -101,9 +101,7 @@ class TestScopeMapping:
             ("any", True),
         ],
     )
-    def test_scope_mapping(
-        self, scope: str, expected_include_external: bool
-    ) -> None:
+    def test_scope_mapping(self, scope: str, expected_include_external: bool) -> None:
         """Scope parameter maps correctly to include_external boolean."""
         # Reproduce the mapping logic from deep_crawl tool
         if scope in ("same-domain", "same-origin"):

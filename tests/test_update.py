@@ -57,7 +57,9 @@ class TestCheckUpdateUpToDate:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"),
+            patch(
+                "crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"
+            ),
             patch("crawl4ai_mcp.server.httpx.AsyncClient", return_value=mock_client),
         ):
             result = await check_update(_make_mock_ctx())
@@ -87,9 +89,14 @@ class TestCheckUpdateAvailable:
         fake_changelog = "### Added\n- **New feature** description"
 
         with (
-            patch("crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"),
+            patch(
+                "crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"
+            ),
             patch("crawl4ai_mcp.server.httpx.AsyncClient", return_value=mock_client),
-            patch("crawl4ai_mcp.server._fetch_changelog_summary", return_value=fake_changelog),
+            patch(
+                "crawl4ai_mcp.server._fetch_changelog_summary",
+                return_value=fake_changelog,
+            ),
         ):
             result = await check_update(_make_mock_ctx())
 
@@ -115,7 +122,9 @@ class TestCheckUpdatePyPIUnreachable:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"),
+            patch(
+                "crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"
+            ),
             patch("crawl4ai_mcp.server.httpx.AsyncClient", return_value=mock_client),
         ):
             result = await check_update(_make_mock_ctx())
@@ -140,7 +149,9 @@ class TestCheckUpdatePyPITimeout:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"),
+            patch(
+                "crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"
+            ),
             patch("crawl4ai_mcp.server.httpx.AsyncClient", return_value=mock_client),
         ):
             result = await check_update(_make_mock_ctx())
@@ -229,7 +240,9 @@ class TestStartupVersionCheckWarning:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"),
+            patch(
+                "crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"
+            ),
             patch("crawl4ai_mcp.server.httpx.AsyncClient", return_value=mock_client),
             patch("crawl4ai_mcp.server.logger") as mock_logger,
         ):
@@ -260,7 +273,9 @@ class TestStartupVersionCheckNoWarning:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"),
+            patch(
+                "crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"
+            ),
             patch("crawl4ai_mcp.server.httpx.AsyncClient", return_value=mock_client),
             patch("crawl4ai_mcp.server.logger") as mock_logger,
         ):
@@ -284,7 +299,9 @@ class TestStartupVersionCheckSwallowsExceptions:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"),
+            patch(
+                "crawl4ai_mcp.server.importlib.metadata.version", return_value="0.8.0"
+            ),
             patch("crawl4ai_mcp.server.httpx.AsyncClient", return_value=mock_client),
         ):
             # Must not raise

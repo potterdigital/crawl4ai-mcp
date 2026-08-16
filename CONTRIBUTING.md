@@ -38,7 +38,18 @@ Rules:
 2. Make your changes
 3. Run `uv run pytest` — all tests must pass
 4. Run `uv run ruff check src/ tests/` — must be clean
-5. Open a PR with a clear description of what changed and why
+5. Format only the files you changed: `uv run ruff format <paths>`. Repo-wide
+   formatting buries the real diff.
+6. Open a PR with a clear description of what changed and why
+
+**The test suite mocks `CrawlResult`, so it cannot tell you whether a tool body
+actually works.** A fully green run has repeatedly coexisted with tools that
+crashed, silently ignored a parameter, or returned the wrong page count. If you
+changed a tool body, also exercise it against a real site or a local fixture
+server through the real stdio server, and say so in the PR.
+
+Using an AI coding agent? [`AGENTS.md`](AGENTS.md) has the commands, the
+invariants that are easy to break, and how to test what the unit suite misses.
 
 ## What Belongs Here
 
