@@ -162,7 +162,9 @@ class TestDestroySessionKillSession:
         """If kill_session raises, the session should still be removed from tracking."""
         app = _make_app_context()
         app.sessions["flaky"] = time.time()
-        app.crawler.crawler_strategy.kill_session.side_effect = RuntimeError("already expired")
+        app.crawler.crawler_strategy.kill_session.side_effect = RuntimeError(
+            "already expired"
+        )
         # Simulate the destroy_session try/except pattern
         try:
             await app.crawler.crawler_strategy.kill_session("flaky")

@@ -274,9 +274,7 @@ class TestBuildRunConfigVerbose:
 
 
 class TestBuildRunConfigUnknownKeys:
-    def test_unknown_key_in_profile_is_stripped(
-        self, tmp_path: Path
-    ) -> None:
+    def test_unknown_key_in_profile_is_stripped(self, tmp_path: Path) -> None:
         """Unknown YAML keys do not cause TypeError from CrawlerRunConfig."""
         profiles = tmp_path / "profiles"
         profiles.mkdir()
@@ -321,9 +319,7 @@ class TestBuildRunConfigWordCountThreshold:
         cfg = build_run_config(pm, None)
         assert cfg.markdown_generator is not None
 
-    def test_word_count_threshold_from_profile_used(
-        self, tmp_path: Path
-    ) -> None:
+    def test_word_count_threshold_from_profile_used(self, tmp_path: Path) -> None:
         """word_count_threshold from profile flows into PruningContentFilter."""
         profiles = tmp_path / "profiles"
         profiles.mkdir()
@@ -347,9 +343,7 @@ class TestBuildRunConfigWordCountThreshold:
         cfg = build_run_config(pm, None)
         assert isinstance(cfg, CrawlerRunConfig)
 
-    def test_word_count_threshold_default_10_when_absent(
-        self, tmp_path: Path
-    ) -> None:
+    def test_word_count_threshold_default_10_when_absent(self, tmp_path: Path) -> None:
         """When no profile sets word_count_threshold, default of 10 is used (no crash)."""
         profiles = tmp_path / "profiles"
         profiles.mkdir()

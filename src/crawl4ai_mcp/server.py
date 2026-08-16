@@ -738,9 +738,7 @@ async def _fetch_sitemap_urls(
 
     # A sitemap index: <sitemapindex><sitemap><loc>
     sub_locs = [
-        loc
-        for elem in root.findall("{*}sitemap")
-        for loc in elem.findall("{*}loc")
+        loc for elem in root.findall("{*}sitemap") for loc in elem.findall("{*}loc")
     ]
     if sub_locs:
         if _depth >= MAX_SITEMAP_DEPTH:
@@ -775,9 +773,7 @@ async def _fetch_sitemap_urls(
         return urls
 
     # A regular sitemap: <urlset><url><loc>
-    locs = [
-        loc for elem in root.findall("{*}url") for loc in elem.findall("{*}loc")
-    ]
+    locs = [loc for elem in root.findall("{*}url") for loc in elem.findall("{*}loc")]
     cleaned = (_clean_loc(loc.text, base_url) for loc in locs)
     return [u for u in cleaned if u]
 
@@ -2133,7 +2129,10 @@ async def extract_patterns(
         items = json.loads(result.extracted_content)
     except json.JSONDecodeError as exc:
         return ExtractionResult(
-            url=url, count=0, items=[], error=f"Extraction returned malformed JSON: {exc}"
+            url=url,
+            count=0,
+            items=[],
+            error=f"Extraction returned malformed JSON: {exc}",
         )
 
     if isinstance(items, dict):
@@ -2376,9 +2375,9 @@ async def deep_crawl(
     # Streaming yields in completion order; a stable sort by depth restores the
     # level-by-level grouping batch mode produced, without reordering within a level.
     results.sort(
-        key=lambda r: (r.metadata or {}).get("depth", 0)
-        if isinstance(r.metadata, dict)
-        else 0
+        key=lambda r: (
+            (r.metadata or {}).get("depth", 0) if isinstance(r.metadata, dict) else 0
+        )
     )
 
     if output_dir:

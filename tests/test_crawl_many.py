@@ -17,8 +17,13 @@ from unittest.mock import MagicMock
 from crawl4ai_mcp.server import CrawlBatchResult, _batch_result, mcp
 
 
-def _make_result(url: str, success: bool = True, content: str = "page content",
-                 error_message: str = "", metadata: dict | None = None):
+def _make_result(
+    url: str,
+    success: bool = True,
+    content: str = "page content",
+    error_message: str = "",
+    metadata: dict | None = None,
+):
     """Create a mock CrawlResult for testing."""
     result = MagicMock()
     result.url = url
@@ -81,8 +86,11 @@ class TestBatchResultMixed:
         """A failing URL must never discard the pages that worked."""
         results = [
             _make_result("https://example.com/good", content="Good content"),
-            _make_result("https://example.com/bad", success=False,
-                         error_message="Connection timeout"),
+            _make_result(
+                "https://example.com/bad",
+                success=False,
+                error_message="Connection timeout",
+            ),
         ]
         out = _batch_result(results)
 
@@ -117,10 +125,16 @@ class TestBatchResultAllFailures:
     def test_all_failures_report_every_reason(self) -> None:
         """A caller distinguishing DNS from TLS needs the per-URL reason."""
         results = [
-            _make_result("https://example.com/fail1", success=False,
-                         error_message="DNS resolution failed"),
-            _make_result("https://example.com/fail2", success=False,
-                         error_message="SSL handshake error"),
+            _make_result(
+                "https://example.com/fail1",
+                success=False,
+                error_message="DNS resolution failed",
+            ),
+            _make_result(
+                "https://example.com/fail2",
+                success=False,
+                error_message="SSL handshake error",
+            ),
         ]
         out = _batch_result(results)
 
@@ -140,10 +154,14 @@ class TestBatchResultDepthMetadata:
     def test_depth_and_parent_survive(self) -> None:
         """deep_crawl's tree shape is only reconstructable if these carry through."""
         results = [
-            _make_result("https://example.com/root", content="Root page",
-                         metadata={"depth": 0}),
-            _make_result("https://example.com/child", content="Child page",
-                         metadata={"depth": 1, "parent_url": "https://example.com/root"}),
+            _make_result(
+                "https://example.com/root", content="Root page", metadata={"depth": 0}
+            ),
+            _make_result(
+                "https://example.com/child",
+                content="Child page",
+                metadata={"depth": 1, "parent_url": "https://example.com/root"},
+            ),
         ]
         out = _batch_result(results)
 

@@ -198,7 +198,9 @@ class TestToolsStayWired:
         from crawl4ai_mcp import server as srv
 
         source = inspect.getsource(getattr(srv, tool_name))
-        assert "_await_with_heartbeat" in source or "_collect_with_progress" in source, (
+        assert (
+            "_await_with_heartbeat" in source or "_collect_with_progress" in source
+        ), (
             f"{tool_name} no longer reports progress; a call outlasting the "
             "client's idle window will be aborted"
         )

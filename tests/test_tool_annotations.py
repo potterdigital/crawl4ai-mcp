@@ -123,7 +123,8 @@ class TestOpenWorldMatchesReach:
         offenders = [
             t.name
             for t in tools
-            if _params(t.name) & url_params and t.annotations.open_world_hint is not True
+            if _params(t.name) & url_params
+            and t.annotations.open_world_hint is not True
         ]
         assert offenders == [], f"tools take a URL but are not open-world: {offenders}"
 

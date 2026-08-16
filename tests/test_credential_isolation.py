@@ -77,7 +77,9 @@ class TestCookiesDoNotOutliveTheirCall:
         with pytest.raises(RuntimeError):
             asyncio.run(
                 srv._crawl_with_overrides(
-                    crawler, "https://x.test/", MagicMock(session_id=None),
+                    crawler,
+                    "https://x.test/",
+                    MagicMock(session_id=None),
                     cookies=cookies,
                 )
             )
@@ -93,7 +95,9 @@ class TestCookiesDoNotOutliveTheirCall:
 
         asyncio.run(
             srv._crawl_with_overrides(
-                crawler, "https://x.test/", MagicMock(session_id="authed"),
+                crawler,
+                "https://x.test/",
+                MagicMock(session_id="authed"),
                 cookies=[{"name": "tok", "value": "S", "domain": "x.test"}],
             )
         )
@@ -111,7 +115,9 @@ class TestCookiesDoNotOutliveTheirCall:
 
         asyncio.run(
             srv._crawl_with_overrides(
-                crawler, "https://x.test/", MagicMock(session_id=None),
+                crawler,
+                "https://x.test/",
+                MagicMock(session_id=None),
                 cookies=[{"name": "tok", "value": "S", "domain": "x.test"}],
             )
         )
@@ -138,11 +144,15 @@ class TestOverridesAreScopedToTheirTask:
 
             await asyncio.gather(
                 srv._crawl_with_overrides(
-                    crawler, "https://A.test/", MagicMock(session_id=None),
+                    crawler,
+                    "https://A.test/",
+                    MagicMock(session_id=None),
                     headers={"X-Auth": "TOKEN-A"},
                 ),
                 srv._crawl_with_overrides(
-                    crawler, "https://B.test/", MagicMock(session_id=None),
+                    crawler,
+                    "https://B.test/",
+                    MagicMock(session_id=None),
                     headers={"X-Auth": "TOKEN-B"},
                 ),
             )
@@ -165,7 +175,9 @@ class TestOverridesAreScopedToTheirTask:
 
             crawler.arun = fake_arun
             await srv._crawl_with_overrides(
-                crawler, "https://first/", MagicMock(session_id=None),
+                crawler,
+                "https://first/",
+                MagicMock(session_id=None),
                 headers={"X-Auth": "SECRET"},
             )
             await srv._crawl_with_overrides(

@@ -109,7 +109,9 @@ class TestFilenameCollisions:
     def test_http_and_https_of_the_same_path_stay_distinct(self) -> None:
         """The scheme is stripped from the readable half, so http:// and
         https:// of the same path used to write to one file."""
-        assert _sanitize_filename("http://example.com/test").startswith("example_com_test_")
+        assert _sanitize_filename("http://example.com/test").startswith(
+            "example_com_test_"
+        )
         assert _sanitize_filename("http://example.com/test") != _sanitize_filename(
             "https://example.com/test"
         )
@@ -120,8 +122,13 @@ class TestFilenameCollisions:
 # ---------------------------------------------------------------------------
 
 
-def _make_result(url: str, success: bool = True, content: str = "page content",
-                 error_message: str = "", metadata: dict | None = None):
+def _make_result(
+    url: str,
+    success: bool = True,
+    content: str = "page content",
+    error_message: str = "",
+    metadata: dict | None = None,
+):
     """Create a mock CrawlResult for testing."""
     result = MagicMock()
     result.url = url
@@ -184,8 +191,9 @@ class TestPersistResults:
         """Failures appear in manifest with error, no .md file created."""
         results = [
             _make_result("https://example.com/good", content="OK"),
-            _make_result("https://example.com/bad", success=False,
-                         error_message="timeout"),
+            _make_result(
+                "https://example.com/bad", success=False, error_message="timeout"
+            ),
         ]
         out = str(tmp_path / "output")
         summary = _persist_results(results, out)
@@ -214,10 +222,14 @@ class TestPersistResults:
     def test_depth_metadata_in_manifest(self, tmp_path) -> None:
         """Depth and parent_url metadata propagate to manifest entries."""
         results = [
-            _make_result("https://example.com/root", content="Root",
-                         metadata={"depth": 0}),
-            _make_result("https://example.com/child", content="Child",
-                         metadata={"depth": 1, "parent_url": "https://example.com/root"}),
+            _make_result(
+                "https://example.com/root", content="Root", metadata={"depth": 0}
+            ),
+            _make_result(
+                "https://example.com/child",
+                content="Child",
+                metadata={"depth": 1, "parent_url": "https://example.com/root"},
+            ),
         ]
         out = str(tmp_path / "output")
         _persist_results(results, out)

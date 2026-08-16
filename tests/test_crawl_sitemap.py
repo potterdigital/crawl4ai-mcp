@@ -136,7 +136,10 @@ class TestFetchSitemapUrlsIndex:
         with patch("crawl4ai_mcp.server.httpx.AsyncClient", return_value=mock_client):
             urls = await _fetch_sitemap_urls("https://example.com/sitemap_index.xml")
 
-        assert urls == ["https://example.com/from-sub-1", "https://example.com/from-sub-2"]
+        assert urls == [
+            "https://example.com/from-sub-1",
+            "https://example.com/from-sub-2",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -197,9 +200,11 @@ class TestLocParsingRobustness:
     @pytest.mark.asyncio
     async def test_a_non_sitemaps_org_namespace_still_parses(self) -> None:
         """google.com/schemas/sitemap/0.84 is a real namespace found in the wild."""
-        xml = (b'<?xml version="1.0"?>'
-               b'<urlset xmlns="http://www.google.com/schemas/sitemap/0.84">'
-               b"<url><loc>https://example.com/a</loc></url></urlset>")
+        xml = (
+            b'<?xml version="1.0"?>'
+            b'<urlset xmlns="http://www.google.com/schemas/sitemap/0.84">'
+            b"<url><loc>https://example.com/a</loc></url></urlset>"
+        )
         with _serve(xml):
             assert await _fetch_sitemap_urls("https://example.com/sitemap.xml") == [
                 "https://example.com/a"
@@ -208,9 +213,11 @@ class TestLocParsingRobustness:
     @pytest.mark.asyncio
     async def test_relative_loc_is_resolved_to_absolute(self) -> None:
         """A relative <loc> passed through as-is is not fetchable."""
-        xml = (b'<?xml version="1.0"?>'
-               b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
-               b"<url><loc>/relative/page</loc></url></urlset>")
+        xml = (
+            b'<?xml version="1.0"?>'
+            b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            b"<url><loc>/relative/page</loc></url></urlset>"
+        )
         with _serve(xml):
             assert await _fetch_sitemap_urls("https://example.com/sitemap.xml") == [
                 "https://example.com/relative/page"
@@ -219,9 +226,11 @@ class TestLocParsingRobustness:
     @pytest.mark.asyncio
     async def test_invisible_characters_are_stripped(self) -> None:
         """A zero-width space survives .strip() and breaks the URL silently."""
-        xml = ('<?xml version="1.0"?>'
-               '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
-               "<url><loc>\u200bhttps://example.com/a\ufeff</loc></url></urlset>").encode()
+        xml = (
+            '<?xml version="1.0"?>'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            "<url><loc>\u200bhttps://example.com/a\ufeff</loc></url></urlset>"
+        ).encode()
         with _serve(xml):
             assert await _fetch_sitemap_urls("https://example.com/sitemap.xml") == [
                 "https://example.com/a"
@@ -230,9 +239,11 @@ class TestLocParsingRobustness:
     @pytest.mark.asyncio
     async def test_a_self_referencing_index_terminates(self) -> None:
         """Without a guard, an index that lists itself recurses until the process dies."""
-        xml = (b'<?xml version="1.0"?>'
-               b'<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
-               b"<sitemap><loc>https://example.com/sitemap.xml</loc></sitemap>"
-               b"</sitemapindex>")
+        xml = (
+            b'<?xml version="1.0"?>'
+            b'<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            b"<sitemap><loc>https://example.com/sitemap.xml</loc></sitemap>"
+            b"</sitemapindex>"
+        )
         with _serve(xml):
             assert await _fetch_sitemap_urls("https://example.com/sitemap.xml") == []

@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # Default location: src/crawl4ai_mcp/profiles/
 PROFILES_DIR = Path(__file__).parent / "profiles"
 
+
 def _valid_config_keys() -> frozenset[str]:
     """Every parameter CrawlerRunConfig actually accepts, read from the class.
 

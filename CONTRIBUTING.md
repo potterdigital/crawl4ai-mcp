@@ -16,7 +16,7 @@ uv run crawl4ai-setup
 
 # Verify everything works
 uv run pytest
-uv run ruff check src/
+uv run ruff check src/ tests/
 ```
 
 ## The stdout Constraint
@@ -37,7 +37,7 @@ Rules:
 1. Fork the repo and create a branch from `main`
 2. Make your changes
 3. Run `uv run pytest` — all tests must pass
-4. Run `uv run ruff check src/` — must be clean
+4. Run `uv run ruff check src/ tests/` — must be clean
 5. Open a PR with a clear description of what changed and why
 
 ## What Belongs Here

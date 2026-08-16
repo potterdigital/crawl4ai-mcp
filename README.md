@@ -303,6 +303,12 @@ uv run python -m crawl4ai_mcp.server 2>&1 1>/dev/null
 **`extract_structured` returns an error about missing API key**
 The LLM extraction tool requires a `provider` and corresponding API key (e.g., `OPENAI_API_KEY`). The `extract_css` tool is a free alternative that doesn't require an LLM.
 
+## Architecture Notes
+
+[`docs/crawl4ai-boundary.md`](docs/crawl4ai-boundary.md) explains which parts of
+this server are hand-rolled and why, verified against crawl4ai 0.9.2 — worth
+reading before assuming something should just call upstream.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.

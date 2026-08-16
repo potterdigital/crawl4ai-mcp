@@ -117,10 +117,16 @@ class TestExtractionErrorDetection:
     def test_detects_a_provider_failure_block(self) -> None:
         from crawl4ai_mcp.server import _extraction_error
 
-        payload = json.dumps([{
-            "index": 0, "error": True, "tags": ["error"],
-            "content": "litellm.NotFoundError: model is no longer available",
-        }])
+        payload = json.dumps(
+            [
+                {
+                    "index": 0,
+                    "error": True,
+                    "tags": ["error"],
+                    "content": "litellm.NotFoundError: model is no longer available",
+                }
+            ]
+        )
 
         assert "NotFoundError" in _extraction_error(payload)
 
@@ -129,17 +135,24 @@ class TestExtractionErrorDetection:
         legitimate extracted data mentions errors all the time."""
         from crawl4ai_mcp.server import _extraction_error
 
-        payload = json.dumps([
-            {"title": "How to handle an error in Python", "tags": ["error", "howto"]},
-            {"title": "Error budgets for SRE teams"},
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "title": "How to handle an error in Python",
+                    "tags": ["error", "howto"],
+                },
+                {"title": "Error budgets for SRE teams"},
+            ]
+        )
 
         assert _extraction_error(payload) is None
 
     def test_error_false_is_not_an_error(self) -> None:
         from crawl4ai_mcp.server import _extraction_error
 
-        assert _extraction_error(json.dumps([{"error": False, "content": "fine"}])) is None
+        assert (
+            _extraction_error(json.dumps([{"error": False, "content": "fine"}])) is None
+        )
 
     def test_non_json_and_empty_are_passed_through(self) -> None:
         from crawl4ai_mcp.server import _extraction_error

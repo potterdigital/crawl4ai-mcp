@@ -252,11 +252,14 @@ class TestSitemapFailuresAreReportable:
     def test_unfetchable_sitemap_reports_instead_of_crashing(self) -> None:
         """A real sitemap URL that 404s or times out must come back as data."""
         with patch.object(
-            srv, "_fetch_sitemap_urls", AsyncMock(side_effect=httpx.ConnectError("boom"))
+            srv,
+            "_fetch_sitemap_urls",
+            AsyncMock(side_effect=httpx.ConnectError("boom")),
         ):
             out = asyncio.run(
-                srv.crawl_sitemap(sitemap_url="https://example.com/sitemap.xml",
-                                  ctx=_extraction_ctx())
+                srv.crawl_sitemap(
+                    sitemap_url="https://example.com/sitemap.xml", ctx=_extraction_ctx()
+                )
             )
 
         assert isinstance(out, CrawlBatchResult)
@@ -275,8 +278,9 @@ class TestSitemapFailuresAreReportable:
             AsyncMock(side_effect=ET.ParseError("syntax error: line 1, column 0")),
         ):
             out = asyncio.run(
-                srv.crawl_sitemap(sitemap_url="https://example.com/",
-                                  ctx=_extraction_ctx())
+                srv.crawl_sitemap(
+                    sitemap_url="https://example.com/", ctx=_extraction_ctx()
+                )
             )
 
         assert (out.crawled, out.total) == (0, 0)
@@ -288,8 +292,9 @@ class TestSitemapFailuresAreReportable:
         """Pointing the tool at an HTML page is an easy mistake to make."""
         with patch.object(srv, "_fetch_sitemap_urls", AsyncMock(return_value=[])):
             out = asyncio.run(
-                srv.crawl_sitemap(sitemap_url="https://example.com/",
-                                  ctx=_extraction_ctx())
+                srv.crawl_sitemap(
+                    sitemap_url="https://example.com/", ctx=_extraction_ctx()
+                )
             )
 
         assert (out.crawled, out.total) == (0, 0)
