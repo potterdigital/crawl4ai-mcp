@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.5.0] - 2026-10-14
+
+A minor release because a default changed: TLS certificates are now verified.
+Everything below was checked by driving the real stdio server with
+`scripts/live_check.py`, which is new in this release and is the check to run
+after any dependency bump.
+
+### Changed
+
+- **TLS certificates are verified by default.** crawl4ai 0.9.2 hard-coded `--ignore-certificate-errors` into its browser launch arguments, so every crawl this server ever made accepted any certificate, and nothing this server configured could change that. 0.9.5 makes verification possible, but its `BrowserConfig.ignore_https_errors` still defaults to `True`, so upgrading alone changes nothing; this server now passes `False` explicitly. Sites with an expired, self-signed or otherwise invalid certificate now fail with a `net::ERR_CERT_*` error, and the report says why and names the opt-out. Verified live: `https://self-signed.badssl.com/` fails with `net::ERR_CERT_AUTHORITY_INVALID` and `https://expired.badssl.com/` with `net::ERR_CERT_DATE_INVALID`, while `https://badssl.com/` crawls normally. To crawl such sites anyway, set `CRAWL4AI_MCP_IGNORE_HTTPS_ERRORS=1` and restart the server. It applies to every crawl in that process, and the server logs a warning to stderr while it is set. Only `1`, `true` or `yes` turn verification off; any other value, including a typo, leaves it on. Sitemap and update-check fetches already verified certificates through httpx and are unchanged.
+- **crawl4ai 0.9.2 → 0.9.5 and mcp 2.0.0 → 2.3.0, with raised floors.** `crawl4ai>=0.9.5` because below it certificate verification is impossible whatever this server configures; `mcp>=2.3.0` because that is the version this release was verified against. No new packages entered the lockfile.
+- **crawl4ai's promotional banner is silenced by default.** 0.9.5 prints a "Crawl4AI Cloud" banner when the first crawler starts and when a crawl is blocked. It goes to stderr, so the transport was never at risk, but it is noise in every MCP client's server log. Set `CRAWL4AI_NO_CLOUD_NOTICE=0` to bring it back; an explicit value always wins.
+- **The default content filter's deprecation warning is silenced, and the filter is deliberately unchanged.** crawl4ai 0.9.4 deprecated `PruningContentFilter` in favour of `PruningContentFilterLXML`, but the lxml class accepts no `preserve_tags`, which this server uses to keep code blocks intact. Measured on 0.9.5: switching would cut `docs.astral.sh/uv/` from 13,124 to 2,867 characters (14 `<code>` elements to 8) and Python's asyncio task docs from 72,766 to 33,570 (68 `<code>` elements to 0). The server keeps the BeautifulSoup filter and filters out that one warning, which otherwise reached stderr once per crawl. A test fails if upstream turns the class into the lxml alias it has announced.
+- **`httpx`, `packaging` and `pyyaml` are declared directly.** The server imports all three, and they were reachable only transitively, `packaging` through a four-deep chain (crawl4ai → unclecode-litellm → tokenizers → huggingface-hub), so one upstream change anywhere on those chains would have broken the server at import.
+
+### Fixed
+
+- **`deep_crawl` dropped a successfully crawled page whenever another fetch in the same crawl failed.** crawl4ai counts only successful pages toward `max_pages` and hands back failed fetches as well, while this server's own cap counted everything. So a dead link took a real page's slot. Measured live on a local link graph whose first link refuses to answer, with BFS and `max_pages=3`: before, `crawled=2` with the dead link kept and a crawled page discarded; after, `crawled=3` with the dead link reported alongside as `success: false`. Failed fetches no longer count toward the cap.
+
+### From crawl4ai 0.9.5
+
+- **`blocked_domains` can no longer be bypassed by a link that spells the host with a port, a trailing dot or userinfo.** On 0.9.2, crawl4ai's own `DomainFilter` let all three forms through a block on `blocked.localhost`. On 0.9.5, a live deep crawl with `blocked_domains=["blocked.localhost"]` fetched none of them, while a control run without the block fetched all three, and an unrelated host on the same page was still crawled. Correspondingly, `allowed_domains` now matches a URL that carries a port, which 0.9.2 rejected.
+- **Markdown keeps `<noscript>` content and the whitespace between removed elements**, per crawl4ai's 0.9.5 release notes (not separately measured here).
+- **The BFS stream-mode off-by-one is still present.** Re-measured against crawl4ai's own strategy on 0.9.5: `stream=True` still returns 0/2/4 pages for `max_pages` 1/3/5 (`stream=False` returns 1/3/5). 0.9.5's per-level budget capping fixes a different over-fetch. So `deep_crawl`'s compensation stays, and it still returns exactly 1, 3 and 5 pages, measured on `docs.astral.sh/uv/` under both `bfs` and `best-first`.
+
 ## [2.4.0] - 2026-08-16
 
 Findings from a live conformance sweep: seven parallel suites drove the real

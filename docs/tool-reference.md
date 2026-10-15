@@ -129,6 +129,32 @@ server sent one. These lines are omitted when there is nothing non-obvious to
 report, so an ordinary timeout stays a one-line error. The same detail appears in
 each failed page's `error` in a batch crawl.
 
+### A certificate is rejected
+
+TLS certificates are verified by default since 2.5.0, so a site with an expired,
+self-signed or otherwise invalid certificate fails, and the last line says why
+and how to proceed. Recorded against a deliberately expired certificate
+(crawl4ai's code-context block shortened here):
+
+```
+Crawl failed
+URL: https://expired.badssl.com/
+HTTP status: None
+Error: Unexpected error in _crawl_web at line 779 in _crawl_web (.venv/lib/python3.12/site-packages/crawl4ai/async_crawler_strategy.py):
+Error: Failed on navigating ACS-GOTO:
+Page.goto: net::ERR_CERT_DATE_INVALID at https://expired.badssl.com/
+Call log:
+  - navigating to "https://expired.badssl.com/", waiting until "domcontentloaded"
+[... crawl4ai's code context, 14 lines ...]
+The site's TLS certificate was rejected: certificates are verified by default since crawl4ai-mcp 2.5.0. To crawl it anyway, restart the server with CRAWL4AI_MCP_IGNORE_HTTPS_ERRORS=1 (applies to every crawl).
+```
+
+`CRAWL4AI_MCP_IGNORE_HTTPS_ERRORS=1` is read when the server starts and applies to
+every crawl that process makes, so restart the server after setting it and unset
+it when you are done. Only `1`, `true` or `yes` turn verification off. The
+companion variable `CRAWL4AI_MCP_AUTO_REPAIR=0` disables the automatic browser
+install described in the README.
+
 ## Extracting with XPath
 
 `extract_css` takes `selector_type="xpath"` and the identical schema shape, so
@@ -188,7 +214,9 @@ On that page this returns roughly 23% of the full text, and it is the right 23%.
 
 `deep_crawl` additionally takes `strategy="best-first"` with
 `relevance_keywords=[...]`, which spends the `max_pages` budget on the pages
-most likely to matter rather than whatever is shallowest.
+most likely to matter rather than whatever is shallowest. `max_pages` counts
+pages crawled successfully; a fetch that fails is returned alongside with its
+`error` and does not use up the budget.
 
 ## Progress on long crawls
 

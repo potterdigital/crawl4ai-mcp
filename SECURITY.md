@@ -31,6 +31,7 @@ This is a local stdio MCP server — it does not listen on network ports or run 
   - a call running _concurrently_ with a cookie-bearing call can see its cookie, because cleanup cannot run until the owning call ends.
 
   Cookies do stay scoped to their own domain, so this is same-domain exposure rather than one host's credential reaching another host — narrower than the 2.1.0 leaks. `destroy_session` clears a session's cookies immediately. **Treat a session as a convenience, not a security boundary: to keep two identities against one site genuinely apart, run them in separate server processes.** This is documented on `crawl_url`'s `cookies` parameter, on `create_session`, and in `docs/crawl4ai-boundary.md`, which records why it is not fixable within this wrapper.
+- **TLS verification**: Certificates are verified by default since 2.5.0. `CRAWL4AI_MCP_IGNORE_HTTPS_ERRORS=1` exists for sites with broken certificates, and it disables verification for **every crawl in that server process**, not just the one site; the server logs a warning to stderr while it is set. Below crawl4ai 0.9.5 verification was impossible, because crawl4ai hard-coded `--ignore-certificate-errors` into its browser launch, which is why the dependency floor was raised to 0.9.5.
 - **Profile injection**: Malicious YAML profiles could inject unexpected browser config values
 - **Network access**: The crawler runs with full network access to whatever URLs are requested
 - **LLM extraction**: The `extract_structured` tool passes content to an LLM provider (API key required)

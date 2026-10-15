@@ -84,6 +84,13 @@ the test suite.
    hand-maintained list. The same rule applies to provider names, which are
    read from litellm. A copied list drifts the moment upstream adds something.
 
+9. **`ignore_https_errors` is always passed explicitly.** crawl4ai's
+   `BrowserConfig` defaults it to `True`, so dropping the argument from
+   `_build_browser_config` silently turns certificate verification off for
+   every crawl and passes every test except `tests/test_upstream_defaults.py`,
+   which guards it along with the other defaults this server sets against
+   crawl4ai's own.
+
 ## Testing
 
 The suite mocks `CrawlResult`, which means **it cannot see whether a tool body
@@ -96,6 +103,20 @@ the result against a real site or a local fixture server. Spawn the server as a
 subprocess, send `initialize`, send `notifications/initialized`, then
 `tools/call`. Parse every stdout line as JSON and treat any line that is not
 JSON as a transport-corruption failure.
+
+`scripts/live_check.py` does exactly that, and is the check to run after any
+dependency bump: `uv run python scripts/live_check.py [--out DIR] [SCENARIO ...]`.
+Its scenarios are `tls` (certificate rejection and the opt-out), `deep-crawl`
+(exact page counts on a real site and a local link graph, including one with a
+failing link), `blocked-domains` (request-log proof, with a control run),
+`notice` (the cloud banner and filter warning on stderr, with a positive
+control), `upstream-bfs` (crawl4ai's own BFS counts, informational) and
+`filter-parity` (the default content filter against crawl4ai's lxml one). Every
+run fails if the server writes a single non-JSON line to stdout. It writes each
+run's raw stdout, stderr and tool calls to the output directory. To add a
+scenario, write a function that takes the `Harness`, start servers with
+`h.server(name, env)`, record checks with `h.check(...)`, close each run with
+`h.finish(srv)`, and register it in `SCENARIOS`.
 
 When writing tests:
 

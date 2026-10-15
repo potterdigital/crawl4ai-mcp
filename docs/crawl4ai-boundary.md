@@ -9,8 +9,13 @@ there hand-rolled sitemap parsing / filename logic / browser health checking in
 here at all?* This document answers it, so the next person does not "simplify"
 something into a regression.
 
-All findings below were verified against **crawl4ai 0.9.2** (2026-08-16) by
-reading the installed package, not the docs. Re-verify on a major upgrade.
+Findings below were verified against **crawl4ai 0.9.2** (2026-08-16) by
+reading the installed package, not the docs. On 2026-10-14 these were
+re-verified against **crawl4ai 0.9.5**, by reading the package and driving the
+real server with `scripts/live_check.py`: the BFS page-count compensation,
+`DomainFilter` matching, and the certificate, cloud-notice and content-filter
+defaults. Everything else still carries its 0.9.2 verification. Re-verify on
+any upgrade; `scripts/live_check.py` is the starting point.
 
 ## Hand-rolled on purpose
 
@@ -138,10 +143,17 @@ Two related facts from the same read, both load-bearing for tests:
 
 `DomainFilter` matching is domain-level like everything else in crawl4ai:
 `_is_subdomain` accepts `domain == parent or domain.endswith("." + parent)`, so
-listing `example.com` also allows `api.example.com`. Its `_extract_domain`
-regex captures the whole netloc, so a URL with an explicit port does not match
-a bare host. Code that needs to predict a filter's verdict should call the
-filter's own `apply()` rather than reimplement this, or the two will drift.
+listing `example.com` also allows `api.example.com`. In 0.9.5,
+`_extract_domain` takes `urlparse(url).hostname` and strips a trailing dot, so
+a port, a trailing dot and userinfo no longer change the host it compares. (In
+0.9.2 a regex captured the whole netloc, so all three let a link slip past
+`blocked_domains`, and a URL carrying a port failed `allowed_domains`.)
+Verified live on 0.9.5 with a request-logging fixture server: links to
+`blocked.localhost:PORT`, `blocked.localhost.:PORT` and
+`u@blocked.localhost:PORT` were all fetched in a control run and none with
+`blocked_domains=["blocked.localhost"]`. Code that needs to predict a filter's
+verdict should call the filter's own `apply()` rather than reimplement this, or
+the two will drift.
 
 ## Compensating for upstream defects
 
@@ -162,10 +174,30 @@ server against real sites while the unit suite was green.
   | `stream=False` | 1 | 3 | 5 |
   | `stream=True` | 0 | 2 | 4 |
 
+  Re-measured on 0.9.5 (`live_check.py upstream-bfs`), unchanged:
+
+  | 0.9.5 | `max_pages=1` | `3` | `5` |
+  | --- | --- | --- | --- |
+  | `stream=False` | 1 | 3 | 5 |
+  | `stream=True` | 0 | 2 | 4 |
+
+  0.9.5 added per-level budget capping (each level is sliced to the budget
+  left before it is fetched), which fixes a different over-fetch.
+  `_arun_stream` still increments the counter and breaks before the yield, so
+  the `+1` stays.
+
   Asking for one extra *and* truncating locally lands on exactly `max_pages`
   under both states, so this stays correct if upstream is ever fixed. Remove
   both halves together, never just one. `best-first` is unaffected and is not
   padded.
+
+  The local cap counts what upstream counts: **successful pages only.**
+  crawl4ai yields failed fetches as well and never counts them toward
+  `max_pages`, so until 2.5.0 a cap over every result let a failed fetch
+  displace a page that had been crawled successfully. Measured on 0.9.5 with a
+  link graph whose first link drops the connection, BFS, `max_pages=3`:
+  `crawled=2` before, `crawled=3` after, with the failed page carried alongside
+  and never counted.
 
 - **Sitemap decompression is decided by the bytes, never the URL.** See
   `_maybe_gunzip`. httpx transparently decodes `Content-Encoding: gzip`, so the
@@ -181,6 +213,30 @@ server against real sites while the unit suite was green.
   Measured on one docs page with a BM25 query: 1,848 characters fresh versus
   21,767 from cache, the latter carrying `status_code=None`. Caching is still
   reachable by name; it is simply not a safe default here.
+
+- **`ignore_https_errors` is `False`, not crawl4ai's `True`.** crawl4ai 0.9.2
+  hard-coded `--ignore-certificate-errors` into its launch args, so no setting
+  could turn verification on; 0.9.5 adds the flag only when
+  `ignore_https_errors` is true and passes it to every new context, but still
+  defaults it to `True`. `_build_browser_config` therefore passes it
+  explicitly, read from `CRAWL4AI_MCP_IGNORE_HTTPS_ERRORS` (only `1`, `true`,
+  `yes` turn verification off). crawl4ai's `fallback_fetch_function` is a
+  caller-supplied callable that cannot be set from a profile, so no fallback
+  path bypasses this. `tests/test_upstream_defaults.py` guards it.
+
+- **The Crawl4AI Cloud notice is off.** `server.py` calls
+  `os.environ.setdefault("CRAWL4AI_NO_CLOUD_NOTICE", "1")` before importing
+  crawl4ai. setdefault, so an operator's explicit `0` still wins; crawl4ai
+  reads the variable when the crawler starts.
+
+- **The default content filter stays `PruningContentFilter`**, not the
+  `PruningContentFilterLXML` crawl4ai 0.9.4 deprecated it in favour of. The
+  lxml class takes no `preserve_tags`, which keeps `<pre>`/`<code>` intact, so
+  switching costs code blocks: measured on 0.9.5, `docs.astral.sh/uv/` drops
+  from 13,124 to 2,867 characters and Python's asyncio task docs from 68
+  `<code>` elements to 0. The deprecation warning is filtered for that one
+  message at construction. crawl4ai has announced that `PruningContentFilter`
+  will become an alias of the lxml class; a test fails when that happens.
 
 - **Optional crawl parameters default to `None`, not to their documented
   values.** `cache_mode`, `page_timeout` and `word_count_threshold` are only
@@ -198,6 +254,12 @@ server against real sites while the unit suite was green.
 - **`scope="same-origin"` cannot be stricter than `same-domain`.** crawl4ai has
   no origin concept; its internal/external split compares registrable domains,
   so subdomains are followed and scheme and port are ignored.
+- **A deep crawl does not follow links to a host without a dot.**
+  `BFSDeepCrawlStrategy.can_process_url` (0.9.5) rejects any netloc lacking a
+  `.` as an invalid domain before the filter chain runs. So `deep_crawl` from
+  `http://localhost:3000/` fetches the start page and nothing else: measured,
+  `crawled=1`, against `crawled=3` for the same pages via `127.0.0.1`. Use
+  `127.0.0.1` or a dotted name such as `app.localhost` for local servers.
 - **A deep crawl always uses `MemoryAdaptiveDispatcher`.**
   `DeepCrawlStrategy.arun()` takes no dispatcher and BFS calls `arun_many()`
   without one, so crawl4ai builds its own from `mean_delay`, `max_range` and

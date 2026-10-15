@@ -207,6 +207,10 @@ uv run pytest
 
 # Diagnose crawl4ai / Playwright health
 uv run crawl4ai-doctor
+
+# Live conformance check: drives the real stdio server against real sites and
+# a local fixture server. Run it after any dependency bump.
+uv run python scripts/live_check.py
 ```
 
 ## Troubleshooting
@@ -232,6 +236,11 @@ uv run crawl4ai-setup
 
 Set `CRAWL4AI_MCP_AUTO_REPAIR=0` to disable the automatic install. Run `uv run crawl4ai-doctor` for a deeper diagnostic.
 
+**A site with an expired or self-signed certificate fails to crawl**
+TLS certificates are verified by default since 2.5.0. Such a site fails with a `net::ERR_CERT_*` error, for example `Page.goto: net::ERR_CERT_DATE_INVALID at https://expired.badssl.com/`, and the report names the opt-out. To crawl it anyway, set `CRAWL4AI_MCP_IGNORE_HTTPS_ERRORS=1` in the server's environment and restart it (in Claude Code, add it to the registration's `env` and reconnect with `/mcp`). The setting is process-wide: it turns verification off for every crawl that server makes, not just the one site, and the server logs a warning to stderr while it is set. Only `1`, `true` or `yes` turn it on.
+
+crawl4ai's own "Crawl4AI Cloud" banner is silenced by default; set `CRAWL4AI_NO_CLOUD_NOTICE=0` to see it.
+
 Note that a directory listing of the browser cache can be misleading: Claude Code's own bundled Playwright writes connection descriptor files into a `b/` subdirectory and launches the system Chrome, so the cache can look populated while containing no downloaded browsers at all. Only `chromium-<revision>/` directories count.
 
 **The server never appears in the client at all**
@@ -247,8 +256,10 @@ The LLM extraction tool requires a `provider` and corresponding API key (e.g., `
 ## Architecture Notes
 
 [`docs/crawl4ai-boundary.md`](docs/crawl4ai-boundary.md) explains which parts of
-this server are hand-rolled and why, verified against crawl4ai 0.9.2 — worth
-reading before assuming something should just call upstream.
+this server are hand-rolled and why — worth reading before assuming something
+should just call upstream. Most of it was verified against crawl4ai 0.9.2; the
+BFS page-count compensation, domain filtering, and the certificate,
+content-filter and cloud-banner defaults were re-verified on 0.9.5.
 
 [`AGENTS.md`](AGENTS.md) is the working brief for AI coding agents: commands,
 the invariants that are easy to break, and how to test something that the unit
