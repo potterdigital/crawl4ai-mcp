@@ -63,6 +63,7 @@ from crawl4ai_mcp.profiles import (
 
 
 AUTO_REPAIR_ENV = "CRAWL4AI_MCP_AUTO_REPAIR"
+IGNORE_HTTPS_ERRORS_ENV = "CRAWL4AI_MCP_IGNORE_HTTPS_ERRORS"
 BROWSER_INSTALL_TIMEOUT_S = 1800
 
 # Serializes browser installs so a background repair and a repair_browser call
@@ -97,6 +98,20 @@ def _auto_repair_enabled() -> bool:
         "0",
         "false",
         "no",
+    }
+
+
+def _ignore_https_errors() -> bool:
+    """Certificate verification is on unless explicitly disabled.
+
+    The inverse polarity of `_auto_repair_enabled` on purpose: only an explicit
+    1/true/yes turns verification off. Unset, empty, a typo or any unrecognized
+    value keeps it on, so a mistake in the operator's config fails safe.
+    """
+    return os.environ.get(IGNORE_HTTPS_ERRORS_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
     }
 
 
@@ -175,9 +190,26 @@ def _build_browser_config() -> BrowserConfig:
     # because disabling the GPU kills WebGL and anti-bot sensors read that as
     # headless. Re-adding it here would silently undo that if stealth is ever
     # turned on.
+    #
+    # ignore_https_errors is passed explicitly and must stay that way. crawl4ai's
+    # BrowserConfig defaults it to True (async_configs.py, 0.9.5), and 0.9.2
+    # went further and hard-coded --ignore-certificate-errors into the launch
+    # args, so every crawl before 2.5.0 accepted any certificate. Dropping this
+    # argument silently disables verification for every crawl and still passes
+    # every test except tests/test_upstream_defaults.py.
+    ignore_https_errors = _ignore_https_errors()
+    if ignore_https_errors:
+        # Logged on every build (startup and each browser repair) so an opt-out
+        # someone forgot about stays visible in the server log.
+        logger.warning(
+            "%s is set: TLS certificate errors are ignored for every crawl in "
+            "this server process.",
+            IGNORE_HTTPS_ERRORS_ENV,
+        )
     return BrowserConfig(
         headless=True,
         verbose=False,  # CRITICAL: verbose=True outputs to stdout, corrupting MCP transport
+        ignore_https_errors=ignore_https_errors,
     )
 
 
