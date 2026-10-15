@@ -16,6 +16,7 @@ Design constraints:
 
 import inspect
 import logging
+import warnings
 from pathlib import Path
 
 import yaml
@@ -197,12 +198,32 @@ def build_run_config(
         # the irrelevant parts. Pruning is density-based and cannot do that.
         content_filter = BM25ContentFilter(user_query=query)
     else:
-        content_filter = PruningContentFilter(
-            threshold=0.48,
-            threshold_type="fixed",
-            min_word_threshold=wct,
-            preserve_tags=["pre", "code"],
-        )
+        # Deliberately the BeautifulSoup PruningContentFilter, not the lxml
+        # PruningContentFilterLXML that crawl4ai 0.9.4 deprecated it in favour
+        # of. The lxml class takes no preserve_tags (its constructor rejects
+        # it and its engine never reads it), so switching would undo the code
+        # preservation above. Measured on 0.9.5 (live_check filter-parity):
+        # docs.astral.sh/uv/ keeps 13,124 chars and 14 <code> here against
+        # 2,867 and 8 with lxml; Python's asyncio-task docs keep 68 <code>
+        # against 0.
+        #
+        # The deprecation warning fires on every config built, so it is
+        # silenced for this one message only. When upstream makes this class
+        # an alias of the lxml one, preserve_tags stops working and
+        # tests/test_upstream_defaults.py fails, which is the moment to
+        # revisit this.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"PruningContentFilter \(BeautifulSoup-based\) is deprecated",
+                category=DeprecationWarning,
+            )
+            content_filter = PruningContentFilter(
+                threshold=0.48,
+                threshold_type="fixed",
+                min_word_threshold=wct,
+                preserve_tags=["pre", "code"],
+            )
 
     merged["markdown_generator"] = DefaultMarkdownGenerator(
         content_filter=content_filter

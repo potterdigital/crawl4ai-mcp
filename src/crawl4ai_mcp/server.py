@@ -24,6 +24,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# crawl4ai 0.9.5 prints a "Crawl4AI Cloud" promotional banner when the first
+# crawler starts and when a crawl is blocked. It goes to stderr, so stdout and
+# the transport are safe, but it is noise in every MCP client's server log.
+# setdefault, not assignment, so an operator can still turn it back on with
+# CRAWL4AI_NO_CLOUD_NOTICE=0. Set before the crawl4ai imports; the browser
+# install subprocess inherits it too.
+os.environ.setdefault("CRAWL4AI_NO_CLOUD_NOTICE", "1")
+
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -569,6 +577,18 @@ def _failure_diagnostics(url: str, result) -> list[str]:
         )
         if retry_after:
             lines.append(f"Retry-After: {_one_line(retry_after, 60)}")
+
+    # Certificates are verified by default since 2.5.0, so a site that crawled
+    # before can now fail here. Say so, and name the way out, rather than
+    # leaving a Playwright stack trace as the only explanation. Matched on
+    # Chromium's net::ERR_CERT_ prefix so other network errors never get it.
+    error = getattr(result, "error_message", None)
+    if isinstance(error, str) and "net::ERR_CERT_" in error:
+        lines.append(
+            "The site's TLS certificate was rejected: certificates are verified "
+            "by default since crawl4ai-mcp 2.5.0. To crawl it anyway, restart "
+            f"the server with {IGNORE_HTTPS_ERRORS_ENV}=1 (applies to every crawl)."
+        )
 
     stats = getattr(result, "crawl_stats", None)
     if not isinstance(stats, dict):
@@ -2961,8 +2981,9 @@ async def deep_crawl(
 
         max_pages: Hard cap on total pages crawled (default 100). The crawl
             stops when this many pages have been successfully crawled, even if
-            more links exist. Large values take proportionally longer — the
-            agent controls this.
+            more links exist. Failed fetches are returned alongside with their
+            error and do not count toward the cap. Large values take
+            proportionally longer — the agent controls this.
 
         scope: Domain scope for link following.
             - "same-domain" (default): Only follow links within the start URL's
@@ -3209,14 +3230,18 @@ async def deep_crawl(
         # means every BFS deep crawl returned one page fewer than asked, and
         # max_pages=1 returned NOTHING.
         #
-        # Measured, driving crawl4ai's own strategy directly:
+        # Measured, driving crawl4ai's own strategy directly, on 0.9.2 and
+        # again on 0.9.5 (scripts/live_check.py upstream-bfs):
         #     stream=False   1->1  3->3  5->5
         #     stream=True    1->0  3->2  5->4
+        # 0.9.5 added per-level budget capping, which fixes a different
+        # over-fetch; _arun_stream still counts, then breaks before the yield.
         #
-        # Asking for one extra and truncating our own results yields exactly
-        # max_pages whether or not upstream ever fixes this: while the bug
-        # exists we receive max_pages, and once it is fixed we receive
-        # max_pages+1 and drop the extra.
+        # Upstream counts only successful pages toward max_pages. Asking for
+        # one extra and capping our own successful results the same way
+        # yields exactly max_pages whether or not upstream ever fixes this:
+        # while the bug exists we receive max_pages, and once it is fixed we
+        # receive max_pages+1 and drop the extra.
         crawl_strategy = BFSDeepCrawlStrategy(
             max_depth=max_depth,
             max_pages=max_pages + 1,
@@ -3281,12 +3306,25 @@ async def deep_crawl(
             (r.metadata or {}).get("depth", 0) if isinstance(r.metadata, dict) else 0
         )
     )
-    # Enforce the caller's cap ourselves. Sorting first means the pages kept are
-    # the shallowest ones, which is what breadth-first is for. See the +1 on the
-    # BFS strategy above: this is the half that stops it over-delivering if the
-    # upstream off-by-one is ever fixed.
+    # Enforce the caller's cap ourselves, counting what upstream counts: only
+    # successful pages. crawl4ai yields failed fetches too and never counts
+    # them, so a cap over everything let one dead link displace a page that
+    # had been crawled successfully (live, 0.9.5, bfs max_pages=3 with one
+    # failing link: crawled=2). Failed fetches are carried alongside with
+    # their error and never count. Sorting first means the pages kept are the
+    # shallowest ones, which is what breadth-first is for. See the +1 on the
+    # BFS strategy above: this is the half that stops it over-delivering if
+    # the upstream off-by-one is ever fixed.
+    failed = [r for r in results if r.success is not True]
+    results = [r for r in results if r.success is True]
     if len(results) > max_pages:
         results = results[:max_pages]
+    results.extend(failed)
+    results.sort(
+        key=lambda r: (
+            (r.metadata or {}).get("depth", 0) if isinstance(r.metadata, dict) else 0
+        )
+    )
 
     if output_dir:
         return _persist_results(

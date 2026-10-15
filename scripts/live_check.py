@@ -27,14 +27,17 @@ env)`, and register it in SCENARIOS.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -49,7 +52,8 @@ CONTROLLED_ENV = (
     "PYTHONWARNINGS",
 )
 
-OPT_OUT_WARNING = "CRAWL4AI_MCP_IGNORE_HTTPS_ERRORS is set"
+IGNORE_ENV = "CRAWL4AI_MCP_IGNORE_HTTPS_ERRORS"
+OPT_OUT_WARNING = f"{IGNORE_ENV} is set"
 CERT_ERROR = "net::ERR_CERT_"
 
 
@@ -313,10 +317,10 @@ def scenario_tls(h: Harness) -> None:
             text = text_of(h.call(srv, "crawl_url", {"url": url}))
             h.check(
                 run,
-                f"crawl_url {url} rejected",
-                f"starts 'Crawl failed', contains {CERT_ERROR}",
-                short(text),
-                text.startswith("Crawl failed") and CERT_ERROR in text,
+                f"crawl_url {url} rejected, report names the opt-out",
+                f"starts 'Crawl failed', contains {CERT_ERROR} and {IGNORE_ENV}",
+                short(text) + f" | names opt-out: {IGNORE_ENV in text}",
+                text.startswith("Crawl failed") and CERT_ERROR in text and IGNORE_ENV in text,
                 evidence=f"{run}.calls.json",
             )
         text = text_of(h.call(srv, "crawl_url", {"url": BADSSL}))
@@ -332,10 +336,13 @@ def scenario_tls(h: Harness) -> None:
         page = pages.get(SELF_SIGNED, {})
         h.check(
             run,
-            f"crawl_many {SELF_SIGNED} page rejected",
-            f"success false, error contains {CERT_ERROR}",
-            f"success={page.get('success')} error={short(page.get('error') or '')}",
-            page.get("success") is False and CERT_ERROR in (page.get("error") or ""),
+            f"crawl_many {SELF_SIGNED} page rejected, error names the opt-out",
+            f"success false, error contains {CERT_ERROR} and {IGNORE_ENV}",
+            f"success={page.get('success')} names opt-out: {IGNORE_ENV in (page.get('error') or '')} "
+            f"error={short(page.get('error') or '')}",
+            page.get("success") is False
+            and CERT_ERROR in (page.get("error") or "")
+            and IGNORE_ENV in (page.get("error") or ""),
             evidence=f"{run}.calls.json",
         )
         check_fetched(h, run, BADSSL, pages.get(BADSSL, {}), "crawl_many")
@@ -394,8 +401,420 @@ def scenario_tls(h: Harness) -> None:
     )
 
 
+# ── local fixture server ────────────────────────────────────────────────────
+
+PROSE = (
+    "This page exists so a crawler has something real to read. It carries a "
+    "full paragraph of ordinary sentences, well past the fifty visible "
+    "characters crawl4ai's structural block heuristic wants to see, so a "
+    "fetch of it is judged on whether it arrived and nothing else."
+)
+
+
+def _page(title: str, links: list[str]) -> bytes:
+    items = "".join(f'<li><a href="{href}">{href}</a></li>' for href in links)
+    return (
+        f"<!doctype html><html><head><title>{title}</title></head><body>"
+        f"<h1>{title}</h1><p>{PROSE}</p><ul>{items}</ul></body></html>"
+    ).encode()
+
+
+BLOCKED_HOST = "blocked.localhost"
+
+
+class Fixture:
+    """A link-graph server on 127.0.0.1 that logs every request it receives.
+
+    /g/  clean graph: root -> a..e, each -> two leaves.
+    /f/  failing graph: root -> dead FIRST, then a..d, each -> one leaf.
+         /f/dead closes the connection without a status line (ERR_EMPTY_RESPONSE).
+    /bd/ links to one blocked host spelled three ways, plus an allowed one.
+         The host is blocked.localhost, not localhost: crawl4ai's BFS
+         can_process_url rejects any netloc without a dot as "Invalid domain"
+         before the filter chain runs, so a bare localhost link is never
+         fetched and a blocked_domains check on it would prove nothing.
+         Chromium resolves every *.localhost name to loopback.
+    """
+
+    def __init__(self) -> None:
+        self.log: list[tuple[str, str]] = []
+        self._lock = threading.Lock()
+        fixture = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args) -> None:  # keep the report readable
+                pass
+
+            def do_GET(self) -> None:
+                with fixture._lock:
+                    fixture.log.append((self.headers.get("Host", ""), self.path))
+                if self.path == "/f/dead":
+                    self.close_connection = True
+                    return
+                body = fixture.route(self.path)
+                if body is None:
+                    self.send_response(404)
+                    self.send_header("Content-Type", "text/html")
+                    self.end_headers()
+                    self.wfile.write(_page("Not found", []))
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.httpd.server_address[1]
+        self.base = f"http://127.0.0.1:{self.port}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def route(self, path: str) -> bytes | None:
+        port = self.port
+        if path == "/g/":
+            return _page("Graph root", [f"/g/{c}" for c in "abcde"])
+        if len(path) == 4 and path.startswith("/g/") and path[3] in "abcde":
+            return _page(f"Graph {path[3]}", [f"{path}/1", f"{path}/2"])
+        if path.startswith("/g/") and path[-2:] in ("/1", "/2"):
+            return _page(f"Graph leaf {path}", [])
+        if path == "/f/":
+            return _page("Failing root", ["/f/dead"] + [f"/f/{c}" for c in "abcd"])
+        if len(path) == 4 and path.startswith("/f/") and path[3] in "abcd":
+            return _page(f"Failing {path[3]}", [f"{path}/1"])
+        if path.startswith("/f/") and path.endswith("/1"):
+            return _page(f"Failing leaf {path}", [])
+        if path == "/bd/":
+            return _page(
+                "Blocked domains root",
+                [
+                    f"http://{BLOCKED_HOST}:{port}/bd/port",
+                    f"http://{BLOCKED_HOST}.:{port}/bd/dot",
+                    f"http://u@{BLOCKED_HOST}:{port}/bd/userinfo",
+                    f"http://127.0.0.1:{port}/bd/allowed",
+                ],
+            )
+        if path in ("/bd/port", "/bd/dot", "/bd/userinfo", "/bd/allowed"):
+            return _page(f"Blocked domains {path}", [])
+        return None
+
+    def mark(self) -> int:
+        with self._lock:
+            return len(self.log)
+
+    def paths_since(self, mark: int) -> list[str]:
+        with self._lock:
+            return [p for _, p in self.log[mark:]]
+
+    def dump(self, out: Path, name: str, mark: int) -> None:
+        with self._lock:
+            rows = self.log[mark:]
+        (out / f"{name}.requests.json").write_text(
+            json.dumps([{"host": h, "path": p} for h, p in rows], indent=2), encoding="utf-8"
+        )
+
+
+_FIXTURE: Fixture | None = None
+
+
+def fixture() -> Fixture:
+    global _FIXTURE
+    if _FIXTURE is None:
+        _FIXTURE = Fixture()
+    return _FIXTURE
+
+
+# ── deep-crawl ──────────────────────────────────────────────────────────────
+
+REAL_SITE = "https://docs.astral.sh/uv/"
+
+
+def _deep(h: Harness, srv: ServerRun, args: dict) -> dict:
+    base = {"cache_mode": "bypass"}
+    base.update(args)
+    return structured(h.call(srv, "deep_crawl", base, timeout=600))
+
+
+def scenario_deep_crawl(h: Harness) -> None:
+    fx = fixture()
+    run = "deep-crawl"
+    srv = h.server(run)
+    try:
+        for strategy, extra in (("bfs", {}), ("best-first", {"relevance_keywords": ["install"]})):
+            for n in (1, 3, 5):
+                r = _deep(h, srv, {"url": REAL_SITE, "max_depth": 2, "max_pages": n, "strategy": strategy, **extra})
+                h.check(
+                    run,
+                    f"real site {strategy} max_pages={n}",
+                    f"crawled == {n}",
+                    f"crawled={r.get('crawled')} total={r.get('total')} error={r.get('error')}",
+                    r.get("crawled") == n,
+                    evidence=f"{run}.calls.json",
+                )
+        for strategy, ns in (("bfs", (1, 3, 5)), ("best-first", (3,))):
+            for n in ns:
+                extra = {"relevance_keywords": ["graph"]} if strategy == "best-first" else {}
+                r = _deep(h, srv, {"url": f"{fx.base}/g/", "max_depth": 2, "max_pages": n, "strategy": strategy, **extra})
+                h.check(
+                    run,
+                    f"fixture /g/ {strategy} max_pages={n}",
+                    f"crawled == {n}",
+                    f"crawled={r.get('crawled')} total={r.get('total')}",
+                    r.get("crawled") == n,
+                    evidence=f"{run}.calls.json",
+                )
+        mark = fx.mark()
+        r = _deep(
+            h, srv,
+            {"url": f"{fx.base}/f/", "max_depth": 2, "max_pages": 3, "strategy": "bfs", "include_links": True},
+        )
+        fx.dump(h.out, "deep-crawl-f", mark)
+        pages = r.get("pages") or []
+        dead = [p for p in pages if str(p.get("url", "")).endswith("/f/dead")]
+        requested = "/f/dead" in fx.paths_since(mark)
+        h.check(
+            run,
+            "fixture /f/ bfs max_pages=3, one fetch fails",
+            "crawled == 3, /f/dead present with success false, /f/dead requested",
+            f"crawled={r.get('crawled')} total={r.get('total')} "
+            f"dead={[(p.get('success'), short(p.get('error') or '', 60)) for p in dead]} "
+            f"dead_requested={requested} urls={[p.get('url', '').split(str(fx.port))[-1] for p in pages]}",
+            r.get("crawled") == 3 and len(dead) == 1 and dead[0].get("success") is False and requested,
+            evidence="deep-crawl-f.requests.json",
+        )
+    finally:
+        h.finish(srv)
+
+
+# ── blocked-domains ─────────────────────────────────────────────────────────
+
+BYPASS_FORMS = ("/bd/port", "/bd/dot", "/bd/userinfo")
+
+
+def scenario_blocked_domains(h: Harness) -> None:
+    fx = fixture()
+    run = "blocked-domains"
+    srv = h.server(run)
+    args = {"url": f"{fx.base}/bd/", "scope": "any", "max_depth": 1, "max_pages": 10}
+    try:
+        mark = fx.mark()
+        _deep(h, srv, args)
+        fx.dump(h.out, "blocked-domains-control", mark)
+        control = set(fx.paths_since(mark))
+        reachable = [f for f in BYPASS_FORMS if f in control]
+        for form in BYPASS_FORMS:
+            h.check(
+                run,
+                f"control: {form} reachable",
+                "requested with no blocked_domains",
+                "requested" if form in control else "unreachable in control, not evidence",
+                form in control,
+                informational=form != "/bd/port",
+                evidence="blocked-domains-control.requests.json",
+            )
+
+        mark = fx.mark()
+        _deep(h, srv, {**args, "blocked_domains": [BLOCKED_HOST]})
+        fx.dump(h.out, "blocked-domains-blocked", mark)
+        blocked = set(fx.paths_since(mark))
+        leaked = [f for f in reachable if f in blocked]
+        h.check(
+            run,
+            f"blocked_domains [{BLOCKED_HOST!r}] fetches no form of it",
+            f"0 of {reachable} requested",
+            f"requested: {leaked or 'none'}",
+            "/bd/port" in reachable and not leaked,
+            evidence="blocked-domains-blocked.requests.json",
+        )
+        h.check(
+            run,
+            "blocked run still fetches /bd/allowed",
+            "/bd/allowed requested",
+            "requested" if "/bd/allowed" in blocked else "missing",
+            "/bd/allowed" in blocked,
+            evidence="blocked-domains-blocked.requests.json",
+        )
+    finally:
+        h.finish(srv)
+
+
+# ── notice ──────────────────────────────────────────────────────────────────
+
+BANNER = "Crawl4AI Cloud is live"
+DEPRECATION = "PruningContentFilter (BeautifulSoup-based) is deprecated"
+
+
+def scenario_notice(h: Harness) -> None:
+    fx = fixture()
+    # crawl4ai shows the banner at most once a day per home folder, so each run
+    # gets a fresh one; otherwise "absent" could just mean "shown earlier today".
+    for run, env, want_banner in (
+        ("notice-control", {"CRAWL4AI_NO_CLOUD_NOTICE": "0"}, True),
+        ("notice-default", {"PYTHONWARNINGS": "always::DeprecationWarning"}, False),
+    ):
+        home = Path(tempfile.mkdtemp(prefix=f"live_check-{run}-"))
+        srv = h.server(run, {**env, "CRAWL4_AI_BASE_DIRECTORY": str(home)})
+        try:
+            text = text_of(h.call(srv, "crawl_url", {"url": f"{fx.base}/g/"}))
+            h.check(
+                run,
+                "crawl_url fixture /g/ succeeds",
+                "does not start 'Crawl failed'",
+                short(text, 80),
+                bool(text) and not text.startswith("Crawl failed"),
+                evidence=f"{run}.calls.json",
+            )
+        finally:
+            h.finish(srv)
+            shutil.rmtree(home, ignore_errors=True)
+        stderr = srv.stderr_text()
+        if want_banner:
+            h.check(
+                run,
+                "banner shown when the user sets CRAWL4AI_NO_CLOUD_NOTICE=0 (positive control)",
+                f"stderr contains {BANNER!r}",
+                f"{stderr.count(BANNER)} occurrences",
+                BANNER in stderr,
+                evidence=srv.stderr_path.name,
+            )
+        else:
+            h.check(
+                run,
+                "banner silenced by default",
+                f"stderr lacks {BANNER!r}",
+                f"{stderr.count(BANNER)} occurrences",
+                BANNER not in stderr,
+                evidence=srv.stderr_path.name,
+            )
+            h.check(
+                run,
+                "no PruningContentFilter deprecation warning",
+                f"stderr lacks {DEPRECATION!r}",
+                f"{stderr.count(DEPRECATION)} occurrences",
+                DEPRECATION not in stderr,
+                evidence=srv.stderr_path.name,
+            )
+
+
+# ── upstream-bfs (informational) ────────────────────────────────────────────
+
+
+def scenario_upstream_bfs(h: Harness) -> None:
+    """Drive crawl4ai's own BFS strategy, no MCP, to re-measure the off-by-one."""
+    os.environ.setdefault("CRAWL4AI_NO_CLOUD_NOTICE", "1")
+    from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
+    from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
+
+    fx = fixture()
+    url = f"{fx.base}/g/"
+
+    async def measure() -> dict[tuple[bool, int], int]:
+        counts: dict[tuple[bool, int], int] = {}
+        async with AsyncWebCrawler(config=BrowserConfig(headless=True, verbose=False)) as crawler:
+            for stream in (False, True):
+                for n in (1, 3, 5):
+                    cfg = CrawlerRunConfig(
+                        deep_crawl_strategy=BFSDeepCrawlStrategy(max_depth=2, max_pages=n),
+                        cache_mode=CacheMode.BYPASS,
+                        verbose=False,
+                        stream=stream,
+                    )
+                    out = await crawler.arun(url=url, config=cfg)
+                    if stream:
+                        results = [r async for r in out]
+                    else:
+                        results = list(out)
+                    counts[(stream, n)] = sum(1 for r in results if r.success)
+        return counts
+
+    counts = asyncio.run(measure())
+    for stream in (False, True):
+        row = "  ".join(f"{n}->{counts[(stream, n)]}" for n in (1, 3, 5))
+        h.check(
+            "upstream-bfs",
+            f"BFSDeepCrawlStrategy stream={stream}",
+            "max_pages -> successful results",
+            row,
+            True,
+            informational=True,
+        )
+
+
+# ── filter-parity ───────────────────────────────────────────────────────────
+
+PARITY_PAGES = (
+    REAL_SITE,
+    "https://docs.astral.sh/uv/guides/projects/",
+    "https://docs.python.org/3/library/asyncio-task.html",
+)
+
+
+def scenario_filter_parity(h: Harness) -> None:
+    """Measure the default content filter against crawl4ai's lxml replacement.
+
+    crawl4ai 0.9.4 deprecated PruningContentFilter for PruningContentFilterLXML,
+    but the lxml class takes no preserve_tags, which this server relies on to
+    keep code blocks. This records what a switch would cost on real docs pages
+    (informational) and checks that the server's own default filter, as
+    build_run_config builds it, still produces the code-preserving output.
+    """
+    import warnings
+
+    import httpx
+    from crawl4ai import PruningContentFilter, PruningContentFilterLXML
+
+    from crawl4ai_mcp.profiles import ProfileManager, build_run_config
+
+    kwargs = dict(threshold=0.48, threshold_type="fixed", min_word_threshold=10)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        reference = PruningContentFilter(**kwargs, preserve_tags=["pre", "code"])
+    lxml = PruningContentFilterLXML(**kwargs)
+    server_default = build_run_config(ProfileManager(), None).markdown_generator.content_filter
+
+    rows = []
+    for url in PARITY_PAGES:
+        html = httpx.get(url, timeout=30, follow_redirects=True).text
+        ref = "".join(reference.filter_content(html))
+        new = "".join(lxml.filter_content(html))
+        ours = "".join(server_default.filter_content(html))
+        row = {
+            "url": url,
+            "html_bytes": len(html),
+            "default_chars": len(ref),
+            "default_code": ref.count("<code"),
+            "lxml_chars": len(new),
+            "lxml_code": new.count("<code"),
+            "server_default_matches": ours == ref,
+        }
+        rows.append(row)
+        h.check(
+            "filter-parity",
+            f"server default filter keeps code blocks: {url}",
+            "build_run_config's filter output == PruningContentFilter(preserve_tags=[pre, code])",
+            f"identical={ours == ref} ({len(ours)} vs {len(ref)} chars)",
+            ours == ref,
+            evidence="filter-parity.json",
+        )
+        h.check(
+            "filter-parity",
+            f"cost of switching to PruningContentFilterLXML: {url}",
+            "chars and <code> kept: default vs lxml",
+            f"chars {row['default_chars']} vs {row['lxml_chars']}, "
+            f"<code> {row['default_code']} vs {row['lxml_code']}",
+            True,
+            informational=True,
+            evidence="filter-parity.json",
+        )
+    (h.out / "filter-parity.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
+
+
 SCENARIOS = {
     "tls": scenario_tls,
+    "deep-crawl": scenario_deep_crawl,
+    "blocked-domains": scenario_blocked_domains,
+    "notice": scenario_notice,
+    "upstream-bfs": scenario_upstream_bfs,
+    "filter-parity": scenario_filter_parity,
 }
 
 
